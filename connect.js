@@ -134,14 +134,19 @@ function listen() {
 
     if (firstLoad) {
       // Bookmarks: on a new device, keep both sides so nothing is lost.
+      // (Always combine, whichever side looks newer: this device may hold an old, emptier list.)
       const remote = profile.bookmarks ?? [];
-      const ids = new Set(remote.map((b) => b.id));
-      const extra = state.bookmarks.filter((b) => !ids.has(b.id));
-      if (extra.length || (state.tempBookmark && !profile.tempBookmark)) {
-        const newerTemp = (profile.tempBookmark?.created ?? 0) > (state.tempBookmark?.created ?? 0);
+      const localIds = new Set(state.bookmarks.map((b) => b.id));
+      const remoteIds = new Set(remote.map((b) => b.id));
+      const fromRemote = remote.filter((b) => !localIds.has(b.id));
+      const fromLocal = state.bookmarks.filter((b) => !remoteIds.has(b.id));
+      const newerTemp = (profile.tempBookmark?.created ?? 0) > (state.tempBookmark?.created ?? 0);
+      const tempBookmark = newerTemp ? profile.tempBookmark : state.tempBookmark;
+      if (fromRemote.length || fromLocal.length || tempBookmark !== state.tempBookmark ||
+          (tempBookmark && !profile.tempBookmark)) {
         bible.applyBookmarks({
-          bookmarks: [...remote, ...extra].sort((a, b) => b.created - a.created),
-          tempBookmark: newerTemp ? profile.tempBookmark : state.tempBookmark,
+          bookmarks: [...state.bookmarks, ...fromRemote].sort((a, b) => b.created - a.created),
+          tempBookmark,
           updated: Date.now(),
         });
         pushBookmarks();
