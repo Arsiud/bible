@@ -78,6 +78,7 @@ main { position: fixed; inset: var(--top) 0 var(--bottom) 0; }
 .chapter h2 { font-family: inherit; font-size: 28px; font-weight: 600; margin: 8px 0 18px; }
 .verse { margin: 0 0 6px; scroll-margin-top: 12px; }
 .verse sup { font-family: -apple-system, sans-serif; font-size: 11px; font-weight: 600; color: var(--muted); margin-right: 4px; }
+.copyright a { color: var(--accent); }
 .copyright { margin-top: 24px; font-family: -apple-system, sans-serif; font-size: 12px; line-height: 1.4; color: var(--muted); }
 .nav-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 32px; font-family: -apple-system, sans-serif; }
 .nav-row button { padding: 10px 16px; border-radius: 10px; background: var(--chip); color: var(--accent); font-size: 15px; font-weight: 600; }

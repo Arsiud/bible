@@ -101,12 +101,18 @@ const API_TRANSLATIONS = {
   },
   NASB: {
     find: (b) => /New American Standard Bible 2020/i.test(b.name),   // never the 1995 edition
+    link: "https://www.lockman.org",   // Lockman requires a clickable link to its site in apps
     copyright: "Scripture quotations taken from the (NASB®) New American Standard Bible®, Copyright © 1960, 1971, " +
       "1977, 1995, 2020 by The Lockman Foundation. Used by permission. All rights reserved. lockman.org",
   },
 };
 for (const t of Object.values(API_TRANSLATIONS)) Object.assign(t, { bibleId: null, cache: new Map() });
 const isApiTranslation = (code) => code in API_TRANSLATIONS;
+
+function copyrightNotice(t) {
+  const link = t.link ? ` <a href="${t.link}" target="_blank" rel="noopener">${t.link.replace("https://", "")}</a>` : "";
+  return `<p class="copyright">${escapeHTML(t.copyright)}${link}</p>`;
+}
 
 async function apiBible(path, params = {}, code = state.translation) {
   const key = state.sharedNivKey;
@@ -214,7 +220,7 @@ async function render({ restoreVerse = state.verse } = {}) {
         `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}</p>`
       ).join("") +
       (state.translation === "ESV" ? `<p class="copyright">${ESV_COPYRIGHT}</p>` : "") +
-      (isApiTranslation(state.translation) ? `<p class="copyright">${escapeHTML(API_TRANSLATIONS[state.translation].copyright)}</p>` : "");
+      (isApiTranslation(state.translation) ? copyrightNotice(API_TRANSLATIONS[state.translation]) : "");
   } catch (error) {
     if (token !== renderToken) return;
     html = `<div class="empty"><h2>Not available</h2><p>${escapeHTML(error.message)}</p></div>`;
