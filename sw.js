@@ -1,5 +1,5 @@
 // Caches the app and the KJV so it opens offline. Bump VERSION when files change.
-const VERSION = "bible-v1";
+const VERSION = "bible-v2";
 const FILES = ["./", "index.html", "style.css", "app.js", "kjv.json", "manifest.json",
                "icon-180.png", "icon-192.png", "icon-512.png"];
 

@@ -30,6 +30,8 @@ const state = {
   chapter: store.get("chapter", 0),
   verse: store.get("verse", 1),               // last verse at the top of the screen
   esvKey: store.get("esvKey", ""),
+  tempBookmark: store.get("tempBookmark", null),   // { book, chapter, verse, created } — unnamed, replaced by the next tap
+  bookmarks: store.get("bookmarks", []),           // [{ id, name, notes, book, chapter, verse, created }]
 };
 const esvCache = new Map();                   // in-memory only, per ESV API terms
 
@@ -40,6 +42,10 @@ const els = {
   drawer: $("drawer"), scrim: $("scrim"), drawerBody: $("drawerBody"),
   drawerTitle: $("drawerTitle"), drawerBack: $("drawerBack"),
   settings: $("settings"), esvKey: $("esvKey"),
+  bookmarkBtn: $("bookmarkBtn"), bookmarks: $("bookmarks"),
+  bookmarkDialog: $("bookmarkDialog"), bookmarkDialogTitle: $("bookmarkDialogTitle"),
+  bookmarkRef: $("bookmarkRef"), bookmarkName: $("bookmarkName"),
+  bookmarkNotes: $("bookmarkNotes"), bookmarkDelete: $("bookmarkDelete"),
 };
 
 function escapeHTML(text) {
@@ -127,6 +133,7 @@ async function render({ restoreVerse = state.verse } = {}) {
     html = `<div class="empty"><h2>Not available</h2><p>${escapeHTML(error.message)}</p></div>`;
   }
   els.chapter.innerHTML = html + navButtons();
+  updateBookmarkBtn();
 
   const target = $(`v${restoreVerse}`);
   if (target && restoreVerse > 1) target.scrollIntoView({ block: "start" });
@@ -152,12 +159,12 @@ function navButtons() {
     `</div>`;
 }
 
-function goTo(book, chapter) {
-  Object.assign(state, { book, chapter, verse: 1 });
+function goTo(book, chapter, verse = 1) {
+  Object.assign(state, { book, chapter, verse });
   store.set("book", book);
   store.set("chapter", chapter);
-  store.set("verse", 1);
-  render({ restoreVerse: 1 });
+  store.set("verse", verse);
+  render({ restoreVerse: verse });
 }
 
 els.chapter.addEventListener("click", (event) => {
@@ -278,15 +285,119 @@ els.settings.addEventListener("close", () => {
   if (state.translation === "ESV") render();
 });
 
+/* ---------- Bookmarks ---------- */
+
+const reference = (b) => `${state.books[b.book]?.name ?? "?"} ${b.chapter + 1}` + (b.verse > 1 ? `:${b.verse}` : "");
+const isHere = (b) => b && b.book === state.book && b.chapter === state.chapter;
+
+function updateBookmarkBtn() {
+  const marked = isHere(state.tempBookmark) || state.bookmarks.some(isHere);
+  els.bookmarkBtn.classList.toggle("on", marked);
+}
+
+function saveBookmarks() {
+  store.set("tempBookmark", state.tempBookmark);
+  store.set("bookmarks", state.bookmarks);
+  updateBookmarkBtn();
+  renderBookmarks();
+}
+
+let toastTimer;
+function toast(message) {
+  let el = document.querySelector(".toast");
+  if (!el) { el = document.createElement("div"); el.className = "toast"; document.body.append(el); }
+  el.textContent = message;
+  el.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.opacity = 0; }, 1800);
+}
+
+// Tapping the ribbon drops the temporary bookmark here, replacing the old one.
+els.bookmarkBtn.addEventListener("click", () => {
+  saveVisibleVerse();
+  const { book, chapter, verse } = state;
+  state.tempBookmark = { book, chapter, verse, created: Date.now() };
+  saveBookmarks();
+  toast(`Bookmarked ${reference(state.tempBookmark)} — name it in Bookmarks to keep it`);
+});
+
+function card(b, temp) {
+  const title = temp ? "Temporary bookmark" : escapeHTML(b.name);
+  const notes = !temp && b.notes ? `<div class="card-notes">${escapeHTML(b.notes)}</div>` : "";
+  const target = temp ? "temp" : b.id;
+  return `<div class="card${temp ? " temp" : ""}">` +
+    `<button class="card-main" data-open="${target}"><div class="card-title">${title}</div>` +
+    `<div class="card-ref">${escapeHTML(reference(b))}</div>${notes}</button>` +
+    `<button class="card-btn" data-edit="${target}">${temp ? "Name" : "Edit"}</button></div>`;
+}
+
+function renderBookmarks() {
+  const { tempBookmark: temp, bookmarks } = state;
+  els.bookmarks.innerHTML =
+    `<div class="section-label">Temporary</div>` +
+    (temp ? card(temp, true) : `<p class="list-empty">Tap the ribbon at the top while reading to drop a temporary bookmark.</p>`) +
+    `<div class="section-label">Saved</div>` +
+    (bookmarks.length ? bookmarks.map((b) => card(b, false)).join("")
+      : `<p class="list-empty">Name your temporary bookmark to save it here, with notes.</p>`);
+}
+
+let editing = null;   // "temp" or a saved bookmark id
+
+function openBookmarkDialog(target) {
+  const b = target === "temp" ? state.tempBookmark : state.bookmarks.find((x) => x.id === target);
+  if (!b) return;
+  editing = target;
+  els.bookmarkDialogTitle.textContent = target === "temp" ? "Save bookmark" : "Edit bookmark";
+  els.bookmarkRef.textContent = reference(b);
+  els.bookmarkName.value = b.name ?? "";
+  els.bookmarkNotes.value = b.notes ?? "";
+  els.bookmarkDelete.hidden = target === "temp";
+  els.bookmarkDialog.returnValue = "";
+  els.bookmarkDialog.showModal();
+}
+
+els.bookmarkDialog.addEventListener("close", () => {
+  const action = els.bookmarkDialog.returnValue;
+  const name = els.bookmarkName.value.trim();
+  const notes = els.bookmarkNotes.value.trim();
+  if (action === "save" && name) {
+    if (editing === "temp" && state.tempBookmark) {
+      const { book, chapter, verse } = state.tempBookmark;
+      state.bookmarks.unshift({ id: String(Date.now()), name, notes, book, chapter, verse, created: Date.now() });
+      state.tempBookmark = null;   // promoted, so the temporary slot is free again
+    } else {
+      Object.assign(state.bookmarks.find((x) => x.id === editing) ?? {}, { name, notes });
+    }
+  } else if (action === "delete") {
+    state.bookmarks = state.bookmarks.filter((x) => x.id !== editing);
+  } else return;
+  saveBookmarks();
+});
+
+els.bookmarks.addEventListener("click", (event) => {
+  const edit = event.target.closest("[data-edit]");
+  if (edit) return openBookmarkDialog(edit.dataset.edit);
+  const open = event.target.closest("[data-open]");
+  if (!open) return;
+  const id = open.dataset.open;
+  const b = id === "temp" ? state.tempBookmark : state.bookmarks.find((x) => x.id === id);
+  if (!b) return;
+  goTo(b.book, b.chapter, b.verse);
+  document.querySelector('.tab[data-view="bibleView"]').click();
+});
+
 /* ---------- Bottom tabs ---------- */
 
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
     document.querySelectorAll(".view").forEach((v) => { v.hidden = v.id !== tab.dataset.view; });
-    els.translationBtn.style.visibility = tab.dataset.view === "bibleView" ? "" : "hidden";
-    els.title.textContent = tab.dataset.view === "bibleView"
-      ? `${state.books[state.book].name} ${state.chapter + 1}` : "Connection";
+    const reading = tab.dataset.view === "bibleView";
+    els.translationBtn.style.visibility = reading ? "" : "hidden";
+    els.bookmarkBtn.style.visibility = reading ? "" : "hidden";
+    if (tab.dataset.view === "bookmarksView") renderBookmarks();
+    els.title.textContent = reading ? `${state.books[state.book].name} ${state.chapter + 1}`
+      : tab.querySelector("span").textContent;
   });
 });
 

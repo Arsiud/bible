@@ -127,3 +127,29 @@ dialog input { width: 100%; padding: 10px 12px; font: inherit; font-size: 16px; 
 .hint { font-size: 13px; color: var(--muted); }
 .hint a { color: var(--accent); }
 .primary-btn { width: 100%; height: 44px; margin-top: 8px; border-radius: 10px; background: var(--accent); color: var(--surface); font-weight: 600; }
+
+/* Bookmark button */
+#bookmarkBtn.on svg path { fill: currentColor; }
+
+/* Bookmarks list */
+.list-page { max-width: 680px; margin: 0 auto; padding: 8px 16px 24px; }
+.list-page .section-label { padding-left: 4px; }
+.card { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 10px; padding: 12px 12px 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.card.temp { border-style: dashed; }
+.card-main { flex: 1; min-width: 0; text-align: left; }
+.card-title { font-weight: 600; }
+.card-ref { color: var(--accent); font-size: 15px; }
+.card-notes { margin-top: 4px; color: var(--muted); font-size: 15px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.card-btn { flex: none; padding: 6px 12px; border-radius: 8px; background: var(--chip); color: var(--accent); font-size: 14px; font-weight: 600; }
+.list-empty { padding: 4px 4px 16px; color: var(--muted); font-size: 15px; }
+
+/* Bookmark dialog */
+dialog textarea { width: 100%; padding: 10px 12px; font: inherit; font-size: 16px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; resize: vertical; }
+dialog .spaced { margin-top: 14px; }
+.dialog-actions { display: flex; gap: 10px; margin-top: 8px; }
+.dialog-actions button { flex: 1; }
+.secondary-btn { height: 44px; margin-top: 8px; border-radius: 10px; background: var(--chip); color: var(--accent); font-weight: 600; }
+.danger-btn { width: 100%; height: 40px; margin-top: 10px; color: #c0392b; font-size: 15px; }
+
+/* Toast */
+.toast { position: fixed; left: 50%; bottom: calc(var(--bottom) + 12px); z-index: 40; transform: translateX(-50%); padding: 10px 16px; border-radius: 20px; background: var(--text); color: var(--bg); font-size: 14px; white-space: nowrap; pointer-events: none; transition: opacity .2s; }
