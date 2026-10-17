@@ -1,8 +1,8 @@
 "use strict";
 
 const TRANSLATIONS = {
+  WEB: "World English Bible",   // the default
   KJV: "King James Version",
-  WEB: "World English Bible",
   ASV: "American Standard Version",
   ESV: "English Standard Version",
 };
@@ -26,7 +26,7 @@ const store = {
 
 const state = {
   books: [],                                  // [{ name, chapters: [[verse text]] }] from kjv.json
-  translation: store.get("translation", "KJV"),
+  translation: store.get("translation", "WEB"),
   book: store.get("book", 0),
   chapter: store.get("chapter", 0),
   verse: store.get("verse", 1),               // last verse at the top of the screen
@@ -727,7 +727,7 @@ async function start() {
   // Guard against a stale or corrupted saved position.
   if (!state.books[state.book]) state.book = 0;
   if (!state.books[state.book].chapters[state.chapter]) state.chapter = 0;
-  if (!TRANSLATIONS[state.translation]) state.translation = "KJV";
+  if (!TRANSLATIONS[state.translation]) state.translation = "WEB";
   render();
   window.bible.ready = true;
   emit("ready");
