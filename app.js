@@ -5,7 +5,6 @@ const TRANSLATIONS = {
   WEB: "World English Bible",
   ASV: "American Standard Version",
   ESV: "English Standard Version",
-  NKJV: "New King James Version",
 };
 
 const ESV_COPYRIGHT =
@@ -80,9 +79,6 @@ async function getVerses() {
   const { translation, book, chapter } = state;
   if (translation === "KJV") return state.books[book].chapters[chapter];
   if (BUNDLED[translation]) return (await loadBundled(translation))[book].chapters[chapter];
-  if (translation === "NKJV") {
-    throw new Error("The NKJV is copyrighted and isn't available yet. Pick KJV or ESV for now.");
-  }
   return fetchESV(`${state.books[book].name} ${chapter + 1}`);
 }
 
