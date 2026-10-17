@@ -38,6 +38,7 @@ const connectionTab = document.querySelector('.tab[data-view="connectionView"] s
 const TRIAL_DAYS = 7;
 const CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";   // no 0/O or 1/I mix-ups
 
+let authKnown = false;    // false until Firebase has said whether we're signed in
 let user = null;          // Firebase Auth user
 let profile = null;       // users/{uid} document, kept live
 let needsNickname = false;
@@ -89,6 +90,7 @@ const AUTH_ERRORS = {
 
 if (auth) onAuthStateChanged(auth, async (signedIn) => {
   stopListening();
+  authKnown = true;
   user = signedIn;
   profile = null;
   needsNickname = false;
@@ -198,8 +200,12 @@ let esvLoaded = false;
 async function loadSharedEsvKey() {
   if (esvLoaded || !(isOwner() || (profile.approved && !profile.blocked))) return;
   esvLoaded = true;
-  const snap = await getDoc(doc(db, "config", "esv")).catch(() => null);
-  bible.setSharedEsvKey(snap?.data()?.key ?? "");
+  try {
+    bible.setSharedEsvKey((await getDoc(doc(db, "config", "esv"))).data()?.key ?? "");
+  } catch (error) {
+    console.warn("ESV key not loaded yet", error.code);
+    esvLoaded = false;   // try again on the next profile update
+  }
 }
 
 /* ---------- Your place and bookmarks ---------- */
@@ -359,6 +365,7 @@ function renderView() {
     view.innerHTML = `<div class="empty"><h2>Connection</h2><p>Not set up yet.</p></div>`;
     return;
   }
+  if (!authKnown) { view.innerHTML = `<p class="list-empty">Loading…</p>`; return; }
   if (!user) return renderSignIn();
   if (needsNickname) return renderNickname();
   if (!profile) { view.innerHTML = `<p class="list-empty">Loading…</p>`; return; }
@@ -371,7 +378,8 @@ function renderView() {
   if (!isOwner() && profile.blocked) {
     banner = `<div class="banner">Your account is paused. Ask the person who runs this app to unblock you.</div>`;
   } else if (!isOwner() && !profile.approved) {
-    const daysLeft = Math.ceil((trialEnds() - Date.now()) / 86400000);
+    // Clamped because the server's clock can run slightly ahead of the phone's.
+    const daysLeft = Math.min(TRIAL_DAYS, Math.ceil((trialEnds() - Date.now()) / 86400000));
     banner = daysLeft > 0
       ? `<div class="banner">Welcome! You have temporary access for ${daysLeft} more day${daysLeft === 1 ? "" : "s"} ` +
         `while the owner approves your account. The shared ESV unlocks once you're approved.</div>`
