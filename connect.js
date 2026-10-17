@@ -19,7 +19,7 @@ import {
   signInWithPopup, GoogleAuthProvider, sendPasswordResetEmail, signOut as authSignOut,
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, deleteDoc, collection, addDoc, onSnapshot,
+  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, onSnapshot,
   query, orderBy, limit, arrayUnion, arrayRemove, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-firestore.js";
 import { firebaseConfig, ownerUid } from "./firebase-config.js";
@@ -556,12 +556,14 @@ function highlightVerses() {
 }
 
 let noteVerse = null;
+let editingNote = null;   // { code, id } while changing one of your own notes
 
 function renderNoteList() {
   const many = groups.size > 1;
   $("noteList").innerHTML = notesHere(noteVerse).map((n) =>
     `<div class="note"><div class="who"><b>${escapeHTML(n.nickname)}</b>` +
-    `${many ? ` in ${escapeHTML(groups.get(n.code).name)}` : ""} · ${ago(n.created)}` +
+    `${many ? ` in ${escapeHTML(groups.get(n.code).name)}` : ""} · ${ago(n.created)}${n.edited ? " · edited" : ""}` +
+    (n.uid === user.uid ? ` · <button type="button" class="link-btn" data-edit-note="${n.code}/${n.id}">Edit</button>` : "") +
     (n.uid === user.uid || isOwner() ? ` · <button type="button" class="link-btn" data-delete="${n.code}/${n.id}">Delete</button>` : "") +
     `</div><div class="text">${escapeHTML(n.text)}</div></div>`
   ).join("");
@@ -579,17 +581,39 @@ window.addEventListener("bible:versetap", ({ detail }) => {
   const select = $("noteGroup");
   select.innerHTML = [...groups.entries()].map(([code, g]) => `<option value="${code}">${escapeHTML(g.name)}</option>`).join("");
   select.hidden = $("noteGroupLabel").hidden = groups.size < 2;
-  $("noteText").value = "";
+  startNewNote();
   noteDialog.returnValue = "";
   noteDialog.showModal();
 });
 
+function startNewNote() {
+  editingNote = null;
+  $("noteText").value = "";
+  $("noteTextLabel").textContent = "Your note";
+  $("noteSave").textContent = "Share";
+  $("noteGroup").hidden = $("noteGroupLabel").hidden = groups.size < 2;
+}
+
+function startEditing(code, id) {
+  const note = groups.get(code)?.notes.find((n) => n.id === id);
+  if (!note) return;
+  editingNote = { code, id };
+  $("noteText").value = note.text;
+  $("noteTextLabel").textContent = "Edit your note";
+  $("noteSave").textContent = "Save";
+  $("noteGroup").hidden = $("noteGroupLabel").hidden = true;
+  $("noteText").focus();
+}
+
 $("noteList").addEventListener("click", (event) => {
+  const edit = event.target.closest("[data-edit-note]");
+  if (edit) return startEditing(...edit.dataset.editNote.split("/"));
   const button = event.target.closest("[data-delete]");
   if (!button || !confirm("Delete this note for everyone?")) return;
   const [code, id] = button.dataset.delete.split("/");
   attempt(async () => {
     await deleteDoc(doc(db, "groups", code, "notes", id));
+    if (editingNote?.id === id) startNewNote();
     renderNoteList();
   });
 });
@@ -597,6 +621,11 @@ $("noteList").addEventListener("click", (event) => {
 noteDialog.addEventListener("close", () => {
   const text = $("noteText").value.trim().slice(0, 2000);
   if (noteDialog.returnValue !== "share" || !text) return;
+  if (editingNote) {
+    const { code, id } = editingNote;
+    editingNote = null;
+    return attempt(() => updateDoc(doc(db, "groups", code, "notes", id), { text, edited: Date.now() }));
+  }
   const code = $("noteGroup").value;
   const { book, chapter } = state;
   attempt(() => addDoc(collection(db, "groups", code, "notes"), {
