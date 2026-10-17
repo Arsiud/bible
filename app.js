@@ -309,6 +309,7 @@ els.translationMenu.addEventListener("click", (event) => {
   state.translation = button.dataset.translation;
   store.set("translation", state.translation);
   render();
+  if (!$("search").hidden) { $("searchInput").placeholder = `Search the ${state.translation}`; runSearch($("searchInput").value); }
 });
 els.settings.addEventListener("close", () => {
   const key = els.esvKey.value.trim();
@@ -317,6 +318,142 @@ els.settings.addEventListener("close", () => {
   store.set("esvKey", key);
   esvCache.clear();
   if (state.translation === "ESV") render();
+});
+
+/* ---------- Search ---------- */
+
+const PAGE = 100;
+const search = { query: "", results: [], shown: 0, token: 0, esvPage: 0, esvTotal: 0 };
+
+// "god so love" -> matches "God so loved", ignoring case and punctuation between words.
+// Each word matches from its start, so "love" also finds "loved" and "loveth".
+function searchPattern(query) {
+  const words = query.toLowerCase().replace(/[’‘]/g, "'").match(/[\w']+/g);
+  if (!words) return null;
+  const parts = words.map((w) => w.replace(/'/g, "['’]"));   // words are only letters, digits and apostrophes
+  return new RegExp(`\\b${parts.join("[^\\w]+")}`, "gi");
+}
+
+function highlight(text, pattern) {
+  let html = "", last = 0;
+  for (const m of text.matchAll(pattern)) {
+    html += escapeHTML(text.slice(last, m.index)) + `<mark>${escapeHTML(m[0])}</mark>`;
+    last = m.index + m[0].length;
+  }
+  return html + escapeHTML(text.slice(last));
+}
+
+async function bibleForSearch() {
+  if (state.translation === "KJV") return state.books;
+  if (BUNDLED[state.translation]) return loadBundled(state.translation);
+  return null;   // ESV searches online
+}
+
+async function runSearch(query) {
+  const token = ++search.token;
+  search.query = query.trim();
+  search.results = [];
+  search.shown = 0;
+  $("searchResults").innerHTML = "";
+  if (search.query.length < 2) { $("searchStatus").textContent = ""; return; }
+  const pattern = searchPattern(search.query);
+  if (!pattern) return;
+
+  const books = await bibleForSearch().catch(() => null);
+  if (token !== search.token) return;
+  if (!books) return runEsvSearch(token, pattern);
+
+  books.forEach((b, bi) => b.chapters.forEach((chapter, ci) => chapter.forEach((text, vi) => {
+    pattern.lastIndex = 0;
+    if (text && pattern.test(text)) search.results.push({ book: bi, chapter: ci, verse: vi + 1, text });
+  })));
+  const n = search.results.length;
+  $("searchStatus").textContent = n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ${state.translation}` : `No verses found in the ${state.translation}`;
+  showMore(pattern);
+}
+
+function showMore(pattern = searchPattern(search.query)) {
+  const next = search.results.slice(search.shown, search.shown + PAGE);
+  search.shown += next.length;
+  document.querySelector("#searchResults .more-btn")?.remove();
+  $("searchResults").insertAdjacentHTML("beforeend", next.map((r) =>
+    `<button class="result" data-go="${r.book},${r.chapter},${r.verse}">` +
+    `<div class="ref">${escapeHTML(`${state.books[r.book].name} ${r.chapter + 1}:${r.verse}`)}</div>` +
+    `<div class="snippet">${highlight(r.text, pattern)}</div></button>`
+  ).join("") + (search.shown < search.results.length || search.esvPage < search.esvTotal
+    ? `<button class="more-btn" data-more>Show more</button>` : ""));
+}
+
+const ESV_BOOK_NAMES = { Psalm: "Psalms" };
+
+async function runEsvSearch(token, pattern, page = 1) {
+  const key = state.esvKey.trim() || state.sharedEsvKey;
+  if (!key) { $("searchStatus").textContent = "Sign in on the Connection tab to search the ESV."; return; }
+  if (page === 1) $("searchStatus").textContent = "Searching the ESV…";
+  try {
+    const params = new URLSearchParams({ q: search.query, "page-size": PAGE, page });
+    const response = await fetch(`https://api.esv.org/v3/passage/search/?${params}`, { headers: { Authorization: `Token ${key}` } });
+    if (!response.ok) throw new Error();
+    const data = await response.json();
+    if (token !== search.token) return;
+    search.esvPage = data.page;
+    search.esvTotal = data.total_pages;
+    for (const r of data.results) {
+      const m = r.reference.match(/^(.+) (\d+):(\d+)/);
+      const book = m && state.books.findIndex((b) => b.name === (ESV_BOOK_NAMES[m[1]] ?? m[1]));
+      if (book >= 0) search.results.push({ book, chapter: Number(m[2]) - 1, verse: Number(m[3]), text: r.content });
+    }
+    const n = data.total_results;
+    $("searchStatus").textContent = n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ESV` : "No verses found in the ESV";
+    showMore(pattern);
+  } catch {
+    if (token === search.token) $("searchStatus").textContent = "Couldn't reach the ESV. Searching the ESV needs an internet connection.";
+  }
+}
+
+function openSearch() {
+  closeDrawer();
+  $("search").hidden = false;
+  $("searchInput").placeholder = `Search the ${state.translation}`;
+  $("searchInput").focus();
+  $("searchInput").select();
+}
+const closeSearch = () => { $("search").hidden = true; };
+
+let searchTimer;
+$("searchInput").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => runSearch($("searchInput").value), 250);
+});
+$("searchForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  clearTimeout(searchTimer);
+  $("searchInput").blur();   // hide the phone keyboard so the results show
+  if ($("searchInput").value.trim() !== search.query) runSearch($("searchInput").value);
+});
+$("searchBtn").addEventListener("click", openSearch);
+$("searchClose").addEventListener("click", closeSearch);
+$("searchResults").addEventListener("click", (event) => {
+  if (event.target.closest("[data-more]")) {
+    if (search.shown < search.results.length) showMore();
+    else runEsvSearch(search.token, searchPattern(search.query), search.esvPage + 1);
+    return;
+  }
+  const result = event.target.closest("[data-go]");
+  if (!result) return;
+  const [book, chapter, verse] = result.dataset.go.split(",").map(Number);
+  closeSearch();
+  showTab("bibleView");
+  goTo(book, chapter, verse);
+  flashVerse = verse;
+});
+
+// Briefly light up the verse you jumped to from search.
+let flashVerse = null;
+window.addEventListener("bible:rendered", () => {
+  if (!flashVerse) return;
+  $(`v${flashVerse}`)?.classList.add("flash");
+  flashVerse = null;
 });
 
 /* ---------- Display mode ---------- */
@@ -511,10 +648,12 @@ els.bookmarks.addEventListener("click", (event) => {
 
 /* ---------- Hooks for connect.js ---------- */
 
+function showTab(view) { document.querySelector(`.tab[data-view="${view}"]`).click(); }
+
 window.bible = {
   state, store, goTo, reference, escapeHTML, toast,
   ready: false,
-  showTab(view) { document.querySelector(`.tab[data-view="${view}"]`).click(); },
+  showTab,
   // Adopt bookmarks saved from another device.
   setSharedEsvKey(key) {
     if (key === state.sharedEsvKey) return;
