@@ -30,9 +30,15 @@ const state = {
   chapter: store.get("chapter", 0),
   verse: store.get("verse", 1),               // last verse at the top of the screen
   esvKey: store.get("esvKey", ""),
+  sharedEsvKey: "",                           // from the group database once approved; never saved on the device
   tempBookmark: store.get("tempBookmark", null),   // { book, chapter, verse, created } — unnamed, replaced by the next tap
   bookmarks: store.get("bookmarks", []),           // [{ id, name, notes, book, chapter, verse, created }]
+  positionUpdated: store.get("positionUpdated", 0),   // timestamps let the newest device win when syncing
+  bookmarksUpdated: store.get("bookmarksUpdated", 0),
 };
+
+// connect.js listens for these to sync with the group database.
+const emit = (name, detail) => window.dispatchEvent(new CustomEvent(`bible:${name}`, { detail }));
 const esvCache = new Map();                   // in-memory only, per ESV API terms
 
 const $ = (id) => document.getElementById(id);
@@ -64,8 +70,8 @@ async function getVerses() {
 }
 
 async function fetchESV(reference) {
-  const key = state.esvKey.trim();
-  if (!key) throw new Error("Add your free ESV API key in Settings to read the ESV.");
+  const key = state.esvKey.trim() || state.sharedEsvKey;
+  if (!key) throw new Error("Sign in on the Connection tab to read the ESV, or add your own free ESV API key in Settings.");
   if (esvCache.has(reference)) return esvCache.get(reference);
 
   const params = new URLSearchParams({
@@ -115,7 +121,7 @@ let renderToken = 0;
 async function render({ restoreVerse = state.verse } = {}) {
   const token = ++renderToken;
   const bookName = state.books[state.book].name;
-  els.title.textContent = `${bookName} ${state.chapter + 1}`;
+  if (!els.bibleView.hidden) els.title.textContent = `${bookName} ${state.chapter + 1}`;
   els.translationBtn.textContent = state.translation;
   document.title = `${bookName} ${state.chapter + 1} · Bible`;
 
@@ -134,6 +140,7 @@ async function render({ restoreVerse = state.verse } = {}) {
   }
   els.chapter.innerHTML = html + navButtons();
   updateBookmarkBtn();
+  emit("rendered");
 
   const target = $(`v${restoreVerse}`);
   if (target && restoreVerse > 1) target.scrollIntoView({ block: "start" });
@@ -159,15 +166,19 @@ function navButtons() {
     `</div>`;
 }
 
-function goTo(book, chapter, verse = 1) {
-  Object.assign(state, { book, chapter, verse });
+function goTo(book, chapter, verse = 1, { updated = Date.now() } = {}) {
+  Object.assign(state, { book, chapter, verse, positionUpdated: updated });
   store.set("book", book);
   store.set("chapter", chapter);
   store.set("verse", verse);
+  store.set("positionUpdated", updated);
   render({ restoreVerse: verse });
+  emit("position");
 }
 
 els.chapter.addEventListener("click", (event) => {
+  const verse = event.target.closest(".verse");
+  if (verse) return emit("versetap", { verse: Number(verse.dataset.verse) });
   const button = event.target.closest("[data-go]");
   if (!button) return;
   const [book, chapter] = button.dataset.go.split(",").map(Number);
@@ -186,8 +197,13 @@ function saveVisibleVerse() {
   const top = els.bibleView.getBoundingClientRect().top;
   for (const verse of els.chapter.querySelectorAll(".verse")) {
     if (verse.getBoundingClientRect().bottom > top + 8) {
-      state.verse = Number(verse.dataset.verse);
+      const number = Number(verse.dataset.verse);
+      if (number === state.verse) return;
+      state.verse = number;
+      state.positionUpdated = Date.now();
       store.set("verse", state.verse);
+      store.set("positionUpdated", state.positionUpdated);
+      emit("position");
       return;
     }
   }
@@ -295,11 +311,14 @@ function updateBookmarkBtn() {
   els.bookmarkBtn.classList.toggle("on", marked);
 }
 
-function saveBookmarks() {
+function saveBookmarks({ updated = Date.now(), remote = false } = {}) {
+  state.bookmarksUpdated = updated;
   store.set("tempBookmark", state.tempBookmark);
   store.set("bookmarks", state.bookmarks);
+  store.set("bookmarksUpdated", updated);
   updateBookmarkBtn();
   renderBookmarks();
+  if (!remote) emit("bookmarks");
 }
 
 let toastTimer;
@@ -386,6 +405,26 @@ els.bookmarks.addEventListener("click", (event) => {
   document.querySelector('.tab[data-view="bibleView"]').click();
 });
 
+/* ---------- Hooks for connect.js ---------- */
+
+window.bible = {
+  state, store, goTo, reference, escapeHTML, toast,
+  ready: false,
+  showTab(view) { document.querySelector(`.tab[data-view="${view}"]`).click(); },
+  // Adopt bookmarks saved from another device.
+  setSharedEsvKey(key) {
+    if (key === state.sharedEsvKey) return;
+    state.sharedEsvKey = key;
+    esvCache.clear();
+    if (state.translation === "ESV" && !state.esvKey) render();
+  },
+  applyBookmarks({ bookmarks, tempBookmark, updated }) {
+    state.bookmarks = bookmarks ?? [];
+    state.tempBookmark = tempBookmark ?? null;
+    saveBookmarks({ updated, remote: true });
+  },
+};
+
 /* ---------- Bottom tabs ---------- */
 
 document.querySelectorAll(".tab").forEach((tab) => {
@@ -396,6 +435,8 @@ document.querySelectorAll(".tab").forEach((tab) => {
     els.translationBtn.style.visibility = reading ? "" : "hidden";
     els.bookmarkBtn.style.visibility = reading ? "" : "hidden";
     if (tab.dataset.view === "bookmarksView") renderBookmarks();
+    // The place may have changed while the reader was hidden (e.g. synced from another device).
+    if (reading && state.verse > 1) $(`v${state.verse}`)?.scrollIntoView({ block: "start" });
     els.title.textContent = reading ? `${state.books[state.book].name} ${state.chapter + 1}`
       : tab.querySelector("span").textContent;
   });
@@ -415,6 +456,8 @@ async function start() {
   if (!state.books[state.book].chapters[state.chapter]) state.chapter = 0;
   if (!TRANSLATIONS[state.translation]) state.translation = "KJV";
   render();
+  window.bible.ready = true;
+  emit("ready");
 }
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

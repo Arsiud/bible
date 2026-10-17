@@ -34,11 +34,7 @@
       <div id="bookmarks" class="list-page"></div>
     </section>
     <section id="connectionView" class="view" hidden>
-      <div class="empty">
-        <svg viewBox="0 0 24 24" width="48" height="48"><circle cx="9" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="17" cy="9" r="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M2.5 19c.8-3.3 3.4-5 6.5-5s5.7 1.7 6.5 5M15 14.2c2.6-.4 5.2.9 6 4.3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-        <h2>Connection</h2>
-        <p>Coming soon.</p>
-      </div>
+      <div id="connection" class="list-page"></div>
     </section>
   </main>
 
@@ -77,7 +73,7 @@
       <h2>Settings</h2>
       <label for="esvKey">ESV API key</label>
       <input id="esvKey" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste your key">
-      <p class="hint">Get a free key at <a href="https://api.esv.org/" target="_blank" rel="noopener">api.esv.org</a> for personal, non-commercial use. It's saved only on this device.</p>
+      <p class="hint">Not needed once you're signed in and approved on the Connection tab. Or get a free key at <a href="https://api.esv.org/" target="_blank" rel="noopener">api.esv.org</a> for personal, non-commercial use. It's saved only on this device.</p>
       <button class="primary-btn">Done</button>
     </form>
   </dialog>
@@ -99,6 +95,23 @@
     </form>
   </dialog>
 
+  <!-- Share a note on a verse with a group -->
+  <dialog id="noteDialog">
+    <form method="dialog">
+      <h2 id="noteRef">Verse</h2>
+      <div id="noteList"></div>
+      <label for="noteGroup" id="noteGroupLabel">Group</label>
+      <select id="noteGroup"></select>
+      <label for="noteText" class="spaced">Your note</label>
+      <textarea id="noteText" rows="4" placeholder="Share a thought with your group"></textarea>
+      <div class="dialog-actions">
+        <button value="cancel" class="secondary-btn">Close</button>
+        <button value="share" class="primary-btn">Share</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="app.js"></script>
+  <script type="module" src="connect.js"></script>
 </body>
 </html>
