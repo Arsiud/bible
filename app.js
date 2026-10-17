@@ -2,6 +2,8 @@
 
 const TRANSLATIONS = {
   KJV: "King James Version",
+  WEB: "World English Bible",
+  ASV: "American Standard Version",
   ESV: "English Standard Version",
   NKJV: "New King James Version",
 };
@@ -41,6 +43,20 @@ const state = {
 const emit = (name, detail) => window.dispatchEvent(new CustomEvent(`bible:${name}`, { detail }));
 const esvCache = new Map();                   // in-memory only, per ESV API terms
 
+// Public-domain translations bundled with the app (and cached by sw.js for offline use).
+const BUNDLED = { WEB: "web.json", ASV: "asv.json" };
+const bundled = new Map();                    // code -> Promise of books
+
+function loadBundled(code) {
+  if (!bundled.has(code)) {
+    bundled.set(code, fetch(BUNDLED[code]).then((r) => r.json()).catch((error) => {
+      bundled.delete(code);
+      throw new Error(`Couldn't load the ${code}. Check your connection and try again.`);
+    }));
+  }
+  return bundled.get(code);
+}
+
 const $ = (id) => document.getElementById(id);
 const els = {
   title: $("title"), chapter: $("chapter"), bibleView: $("bibleView"),
@@ -63,6 +79,7 @@ function escapeHTML(text) {
 async function getVerses() {
   const { translation, book, chapter } = state;
   if (translation === "KJV") return state.books[book].chapters[chapter];
+  if (BUNDLED[translation]) return (await loadBundled(translation))[book].chapters[chapter];
   if (translation === "NKJV") {
     throw new Error("The NKJV is copyrighted and isn't available yet. Pick KJV or ESV for now.");
   }
@@ -130,7 +147,7 @@ async function render({ restoreVerse = state.verse } = {}) {
     const verses = await getVerses();
     if (token !== renderToken) return;   // a newer chapter was requested meanwhile
     html = `<h2>${escapeHTML(bookName)} ${state.chapter + 1}</h2>` +
-      verses.map((text, i) => text == null ? "" :
+      verses.map((text, i) => !text ? "" :
         `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}</p>`
       ).join("") +
       (state.translation === "ESV" ? `<p class="copyright">${ESV_COPYRIGHT}</p>` : "");
