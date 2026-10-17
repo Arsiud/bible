@@ -131,6 +131,12 @@
     </form>
   </dialog>
 
+  <!-- API.Bible's required usage reporting (FUMS) for the NIV -->
+  <script src="https://pkg.api.bible/fumsV3.min.js" async></script>
+  <script>
+    window.fumsData = window.fumsData || [];
+    window.fums = window.fums || function () { window.fumsData.push(arguments); };
+  </script>
   <script src="app.js"></script>
   <script type="module" src="connect.js"></script>
 </body>

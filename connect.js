@@ -94,9 +94,10 @@ if (auth) onAuthStateChanged(auth, async (signedIn) => {
   user = signedIn;
   profile = null;
   needsNickname = false;
-  esvLoaded = false;
+  keysLoaded = false;
   if (!user) {
-    bible.setSharedEsvKey("");
+    bible.setSharedKey("esv", "");
+    bible.setSharedKey("niv", "");
     renderView();
     highlightVerses();
     return;
@@ -163,7 +164,7 @@ function listen() {
     if ((profile.bookmarksUpdated ?? 0) > state.bookmarksUpdated) {
       bible.applyBookmarks({ bookmarks: profile.bookmarks, tempBookmark: profile.tempBookmark, updated: profile.bookmarksUpdated });
     }
-    loadSharedEsvKey();
+    loadSharedKeys();
 
     const codes = new Set(isActive() ? profile.groups ?? [] : []);
     for (const [code, group] of groups) {
@@ -201,15 +202,19 @@ function watchGroup(code) {
   );
 }
 
-let esvLoaded = false;
-async function loadSharedEsvKey() {
-  if (esvLoaded || !(isOwner() || (profile.approved && !profile.blocked))) return;
-  esvLoaded = true;
+// Translation keys the owner shares with approved people (config/esv, config/niv).
+const SHARED_KEYS = { esv: "ESV", niv: "NIV" };
+let keysLoaded = false;
+async function loadSharedKeys() {
+  if (keysLoaded || !(isOwner() || (profile.approved && !profile.blocked))) return;
+  keysLoaded = true;
   try {
-    bible.setSharedEsvKey((await getDoc(doc(db, "config", "esv"))).data()?.key ?? "");
+    for (const name of Object.keys(SHARED_KEYS)) {
+      bible.setSharedKey(name, (await getDoc(doc(db, "config", name))).data()?.key ?? "");
+    }
   } catch (error) {
     console.warn("ESV key not loaded yet", error.code);
-    esvLoaded = false;   // try again on the next profile update
+    keysLoaded = false;   // try again on the next profile update
   }
 }
 
@@ -355,10 +360,13 @@ function renderPeople() {
   return `<div class="section-label">People${waiting.length ? ` · ${waiting.length} waiting` : ""}</div>` +
     `<div class="group">${others.length ? [...waiting, ...others.filter((p) => !waiting.includes(p))].map(row).join("")
       : `<p class="list-empty" style="padding:12px 14px 4px">Nobody else has signed up yet.</p>`}` +
-    `<form class="esv-form" id="esvForm"><label for="sharedEsv">Shared ESV key</label>` +
-    `<div class="inline"><input class="field" id="sharedEsv" autocomplete="off" autocapitalize="off" spellcheck="false" ` +
-    `placeholder="${state.sharedEsvKey ? "Key is set. Paste a new one to replace it" : "Paste the key to share it with approved people"}">` +
-    `<button class="card-btn">Save</button></div></form></div>`;
+    Object.entries(SHARED_KEYS).map(([name, label]) => {
+      const set = name === "esv" ? state.sharedEsvKey : state.sharedNivKey;
+      return `<form class="esv-form" data-key-form="${name}"><label for="shared-${name}">Shared ${label} key</label>` +
+        `<div class="inline"><input class="field" id="shared-${name}" autocomplete="off" autocapitalize="off" spellcheck="false" ` +
+        `placeholder="${set ? "Key is set. Paste a new one to replace it" : "Paste the key to share it with approved people"}">` +
+        `<button class="card-btn">Save</button></div></form>`;
+    }).join("") + `</div>`;
 }
 
 /* ---------- Connection tab ---------- */
@@ -415,8 +423,8 @@ function renderView() {
       `<div class="group-foot"><button class="link-btn" data-leave="${code}">Leave group</button></div></div>`;
   }).join("");
 
-  // Keep a half-typed ESV key if the list redraws while the owner is pasting.
-  const esvDraft = $("sharedEsv")?.value ?? "";
+  // Keep a half-pasted key if the list redraws while the owner is pasting.
+  const drafts = Object.keys(SHARED_KEYS).map((name) => $(`shared-${name}`)?.value ?? "");
   view.innerHTML = header + banner +
     `<div class="row-actions"><button class="secondary-btn" data-create>Create group</button>` +
     `<button class="secondary-btn" data-join>Join group</button></div>` +
@@ -424,7 +432,7 @@ function renderView() {
     (cards || `<p class="list-empty">Create a group and invite people, or join one with its code. ` +
       `Tap any verse while reading to share a note with your group.</p>`) +
     (isOwner() ? renderPeople() : "");
-  if (esvDraft && $("sharedEsv")) $("sharedEsv").value = esvDraft;
+  Object.keys(SHARED_KEYS).forEach((name, i) => { if (drafts[i] && $(`shared-${name}`)) $(`shared-${name}`).value = drafts[i]; });
 }
 
 function renderSignIn() {
@@ -476,18 +484,19 @@ view.addEventListener("submit", async (event) => {
       else await signInWithEmailAndPassword(auth, email, password);
     } else if (form.id === "nicknameForm") {
       await createProfile($("nickname").value.trim());
-    } else if (form.id === "esvForm") {
-      const key = $("sharedEsv").value.trim();
+    } else if (form.dataset.keyForm) {
+      const name = form.dataset.keyForm;
+      const key = $(`shared-${name}`).value.trim();
       if (key) {
-        await setDoc(doc(db, "config", "esv"), { key });
-        $("sharedEsv").value = "";
-        bible.setSharedEsvKey(key);
-        toast("ESV key shared with approved people");
+        await setDoc(doc(db, "config", name), { key });
+        $(`shared-${name}`).value = "";
+        bible.setSharedKey(name, key);
+        toast(`${SHARED_KEYS[name]} key shared with approved people`);
         renderView();
       }
     }
   } catch (error) {
-    if (form.id === "esvForm") { console.error(error); toast("Couldn't save the key."); }
+    if (form.dataset.keyForm) { console.error(error); toast("Couldn't save the key."); }
     else showError(error);
   }
   button.disabled = false;
