@@ -203,7 +203,7 @@ function watchGroup(code) {
 }
 
 // Translation keys the owner shares with approved people (config/esv, config/niv).
-const SHARED_KEYS = { esv: "ESV", niv: "NIV" };
+const SHARED_KEYS = { esv: "ESV", niv: "API.Bible (NIV, NASB)" };   // "niv" holds the API.Bible key
 let keysLoaded = false;
 async function loadSharedKeys() {
   if (keysLoaded || !(isOwner() || (profile.approved && !profile.blocked))) return;

@@ -6,6 +6,7 @@ const TRANSLATIONS = {
   ASV: "American Standard Version",
   ESV: "English Standard Version",
   NIV: "New International Version",
+  NASB: "New American Standard Bible (2020)",
 };
 
 const ESV_COPYRIGHT =
@@ -33,7 +34,7 @@ const state = {
   verse: store.get("verse", 1),               // last verse at the top of the screen
   esvKey: store.get("esvKey", ""),
   sharedEsvKey: "",                           // from the group database once approved; never saved on the device
-  sharedNivKey: "",                           // API.Bible key, same rules as the ESV key
+  sharedNivKey: "",                           // API.Bible key (NIV and NASB), same rules as the ESV key
   tempBookmark: store.get("tempBookmark", null),   // { book, chapter, verse, created } — unnamed, replaced by the next tap
   bookmarks: store.get("bookmarks", []),           // [{ id, name, notes, book, chapter, verse, created }]
   positionUpdated: store.get("positionUpdated", 0),   // timestamps let the newest device win when syncing
@@ -81,59 +82,70 @@ async function getVerses() {
   const { translation, book, chapter } = state;
   if (translation === "KJV") return state.books[book].chapters[chapter];
   if (BUNDLED[translation]) return (await loadBundled(translation))[book].chapters[chapter];
-  if (translation === "NIV") return fetchNIV(book, chapter);
+  if (isApiTranslation(translation)) return fetchApiChapter(translation, book, chapter);
   return fetchESV(`${state.books[book].name} ${chapter + 1}`);
 }
 
-/* The NIV comes from API.Bible (non-commercial Starter plan). Its terms allow keeping fewer
-   than 500 consecutive verses, so chapters are cached in memory only, like the ESV. Web apps
-   must report what's read through API.Bible's FUMS script (loaded in index.html). */
+/* The NIV and NASB (2020) come from API.Bible (non-commercial Starter plan), using one shared key.
+   Its terms allow keeping fewer than 500 consecutive verses, so chapters are cached in memory only,
+   like the ESV. Web apps must report what's read through API.Bible's FUMS script (in index.html). */
 const API_BIBLE = "https://rest.api.bible/v1";
 const BOOK_CODES = ("GEN EXO LEV NUM DEU JOS JDG RUT 1SA 2SA 1KI 2KI 1CH 2CH EZR NEH EST JOB PSA PRO ECC SNG " +
   "ISA JER LAM EZK DAN HOS JOL AMO OBA JON MIC NAM HAB ZEP HAG ZEC MAL MAT MRK LUK JHN ACT ROM 1CO 2CO GAL " +
   "EPH PHP COL 1TH 2TH 1TI 2TI TIT PHM HEB JAS 1PE 2PE 1JN 2JN 3JN JUD REV").split(" ");
-const NIV_COPYRIGHT_FALLBACK = "Scripture quotations taken from The Holy Bible, New International Version® NIV®. " +
-  "Copyright © 1973, 1978, 1984, 2011 by Biblica, Inc.™ Used by permission. All rights reserved worldwide.";
-const niv = { bibleId: null, copyright: NIV_COPYRIGHT_FALLBACK, cache: new Map() };
+const API_TRANSLATIONS = {
+  NIV: {
+    find: (b) => /New International Version/i.test(b.name),
+    copyright: "Scripture quotations taken from The Holy Bible, New International Version® NIV®. " +
+      "Copyright © 1973, 1978, 1984, 2011 by Biblica, Inc.™ Used by permission. All rights reserved worldwide.",
+  },
+  NASB: {
+    find: (b) => /New American Standard Bible 2020/i.test(b.name),   // never the 1995 edition
+    copyright: "Scripture quotations taken from the (NASB®) New American Standard Bible®, Copyright © 1960, 1971, " +
+      "1977, 1995, 2020 by The Lockman Foundation. Used by permission. All rights reserved. lockman.org",
+  },
+};
+for (const t of Object.values(API_TRANSLATIONS)) Object.assign(t, { bibleId: null, cache: new Map() });
+const isApiTranslation = (code) => code in API_TRANSLATIONS;
 
-async function apiBible(path, params = {}) {
+async function apiBible(path, params = {}, code = state.translation) {
   const key = state.sharedNivKey;
-  if (!key) throw new Error("Sign in on the Connection tab to read the NIV.");
+  if (!key) throw new Error(`Sign in on the Connection tab to read the ${code}.`);
   let response;
   try {
     response = await fetch(`${API_BIBLE}${path}?${new URLSearchParams(params)}`, { headers: { "api-key": key } });
   } catch {
-    throw new Error("Couldn't reach the NIV. Reading the NIV needs an internet connection.");
+    throw new Error(`Couldn't reach the ${code}. Reading the ${code} needs an internet connection.`);
   }
-  if (response.status === 401 || response.status === 403) throw new Error("The NIV key was rejected. Ask the owner to check it.");
-  if (!response.ok) throw new Error("Couldn't load this from the NIV.");
+  if (response.status === 401 || response.status === 403) throw new Error(`The ${code} key was rejected. Ask the owner to check it.`);
+  if (!response.ok) throw new Error(`Couldn't load this from the ${code}.`);
   const body = await response.json();
   const token = body.meta?.fumsToken ?? body.meta?.fumsId;
   if (token && window.fums) window.fums("trackView", token);
   return body.data;
 }
 
-// Finds the NIV among the Bibles this key may use.
-async function nivBibleId() {
-  if (niv.bibleId) return niv.bibleId;
-  const bibles = await apiBible("/bibles", { language: "eng" });
-  const found = bibles.find((b) => [b.abbreviation, b.abbreviationLocal].includes("NIV")) ??
-    bibles.find((b) => /New International Version/i.test(b.name));
-  if (!found) throw new Error("The NIV isn't enabled for this key yet. Add it in the API.Bible dashboard.");
-  niv.bibleId = found.id;
-  apiBible(`/bibles/${found.id}`).then((b) => { if (b?.copyright) niv.copyright = b.copyright; }).catch(() => {});
-  return niv.bibleId;
+// Finds this translation among the Bibles the key may use.
+async function apiBibleId(code) {
+  const t = API_TRANSLATIONS[code];
+  if (t.bibleId) return t.bibleId;
+  const found = (await apiBible("/bibles", { language: "eng" }, code)).find(t.find);
+  if (!found) throw new Error(`The ${code} isn't enabled for this key yet. Add it in the API.Bible dashboard.`);
+  t.bibleId = found.id;
+  apiBible(`/bibles/${found.id}`, {}, code).then((b) => { if (b?.copyright) t.copyright = b.copyright; }).catch(() => {});
+  return t.bibleId;
 }
 
-async function fetchNIV(book, chapter) {
+async function fetchApiChapter(code, book, chapter) {
+  const t = API_TRANSLATIONS[code];
   const id = `${BOOK_CODES[book]}.${chapter + 1}`;
-  if (niv.cache.has(id)) return niv.cache.get(id);
-  const data = await apiBible(`/bibles/${await nivBibleId()}/chapters/${id}`, {
+  if (t.cache.has(id)) return t.cache.get(id);
+  const data = await apiBible(`/bibles/${await apiBibleId(code)}/chapters/${id}`, {
     "content-type": "text", "include-verse-numbers": "true", "include-titles": "false",
     "include-notes": "false", "include-chapter-numbers": "false",
-  });
+  }, code);
   const verses = splitVerses(data.content);
-  niv.cache.set(id, verses);
+  t.cache.set(id, verses);
   return verses;
 }
 
@@ -202,7 +214,7 @@ async function render({ restoreVerse = state.verse } = {}) {
         `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}</p>`
       ).join("") +
       (state.translation === "ESV" ? `<p class="copyright">${ESV_COPYRIGHT}</p>` : "") +
-      (state.translation === "NIV" ? `<p class="copyright">${escapeHTML(niv.copyright)}</p>` : "");
+      (isApiTranslation(state.translation) ? `<p class="copyright">${escapeHTML(API_TRANSLATIONS[state.translation].copyright)}</p>` : "");
   } catch (error) {
     if (token !== renderToken) return;
     html = `<div class="empty"><h2>Not available</h2><p>${escapeHTML(error.message)}</p></div>`;
@@ -408,12 +420,12 @@ function highlight(text, pattern) {
 async function bibleForSearch() {
   if (state.translation === "KJV") return state.books;
   if (BUNDLED[state.translation]) return loadBundled(state.translation);
-  return null;   // ESV and NIV search online
+  return null;   // ESV, NIV and NASB search online
 }
 
 async function runSearch(query) {
   const token = ++search.token;
-  Object.assign(search, { query: query.trim(), results: [], shown: 0, esvPage: 0, esvTotal: 0, nivOffset: 0, nivTotal: 0 });
+  Object.assign(search, { query: query.trim(), translation: state.translation, results: [], shown: 0, esvPage: 0, esvTotal: 0, nivOffset: 0, nivTotal: 0 });
   $("searchResults").innerHTML = "";
   if (search.query.length < 2) { $("searchStatus").textContent = ""; return; }
   search.exact = searchPattern(search.query);
@@ -421,7 +433,7 @@ async function runSearch(query) {
 
   const books = await bibleForSearch().catch(() => null);
   if (token !== search.token) return;
-  if (!books) return state.translation === "NIV" ? runNivSearch(token) : runEsvSearch(token);
+  if (!books) return isApiTranslation(state.translation) ? runApiSearch(token) : runEsvSearch(token);
 
   // Close matches: verses with most of the meaningful words, in any order and with any wording between.
   const keywords = [...new Set(queryWords(search.query).filter((w) => !STOP_WORDS.has(w)))];
@@ -471,10 +483,11 @@ function showMore() {
 }
 
 // API.Bible's search matches the words (with some spelling tolerance) and ranks by relevance.
-async function runNivSearch(token, offset = 0) {
-  if (offset === 0) $("searchStatus").textContent = "Searching the NIV…";
+async function runApiSearch(token, offset = 0) {
+  const code = state.translation;
+  if (offset === 0) $("searchStatus").textContent = `Searching the ${code}…`;
   try {
-    const data = await apiBible(`/bibles/${await nivBibleId()}/search`, { query: search.query, limit: PAGE, offset });
+    const data = await apiBible(`/bibles/${await apiBibleId(code)}/search`, { query: search.query, limit: PAGE, offset }, code);
     if (token !== search.token) return;
     search.exact = search.words = new RegExp(`\\b(?:${queryWords(search.query).map(wordPattern).join("|")})`, "gi");
     for (const v of data.verses ?? []) {
@@ -485,7 +498,7 @@ async function runNivSearch(token, offset = 0) {
     search.nivOffset = offset + PAGE;
     search.nivTotal = data.total ?? 0;
     const n = search.nivTotal;
-    $("searchStatus").textContent = n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the NIV` : "Nothing found in the NIV";
+    $("searchStatus").textContent = n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ${code}` : `Nothing found in the ${code}`;
     showMore();
   } catch (error) {
     if (token === search.token) $("searchStatus").textContent = error.message;
@@ -525,6 +538,8 @@ function openSearch() {
   closeDrawer();
   $("search").hidden = false;
   $("searchInput").placeholder = `Search the ${state.translation}`;
+  // Results from another translation are stale: search again in this one.
+  if (search.query && search.translation !== state.translation) runSearch($("searchInput").value);
   $("searchInput").focus();
   $("searchInput").select();
 }
@@ -546,7 +561,7 @@ $("searchClose").addEventListener("click", closeSearch);
 $("searchResults").addEventListener("click", (event) => {
   if (event.target.closest("[data-more]")) {
     if (search.shown < search.results.length) showMore();
-    else if (state.translation === "NIV") runNivSearch(search.token, search.nivOffset);
+    else if (isApiTranslation(state.translation)) runApiSearch(search.token, search.nivOffset);
     else runEsvSearch(search.token, search.esvPage + 1);
     return;
   }
@@ -776,9 +791,8 @@ window.bible = {
     } else if (name === "niv") {
       if (key === state.sharedNivKey) return;
       state.sharedNivKey = key;
-      niv.cache.clear();
-      niv.bibleId = null;
-      if (state.translation === "NIV") render();
+      for (const t of Object.values(API_TRANSLATIONS)) Object.assign(t, { bibleId: null, cache: new Map() });
+      if (isApiTranslation(state.translation)) render();
     }
   },
   applyBookmarks({ bookmarks, tempBookmark, updated }) {
