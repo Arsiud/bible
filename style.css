@@ -9,8 +9,10 @@
   --top: calc(52px + env(safe-area-inset-top));
   --bottom: calc(56px + env(safe-area-inset-bottom));
 }
+/* Display mode: "Match device" follows the system; Light, Dark and photo backgrounds set
+   data-theme on <html> (a photo picks light or dark from how bright it is). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #161412;
     --surface: #1f1c19;
     --text: #ece6dd;
@@ -20,6 +22,23 @@
     --chip: #2a2622;
   }
 }
+:root[data-theme="dark"] {
+  --bg: #161412;
+  --surface: #1f1c19;
+  --text: #ece6dd;
+  --muted: #9a9086;
+  --accent: #d8b48c;
+  --line: #34302b;
+  --chip: #2a2622;
+}
+
+/* Photo background: fixed behind everything, tinted so text stays readable. */
+.backdrop { position: fixed; inset: 0; z-index: -1; background: center / cover no-repeat; }
+.backdrop::after { content: ""; position: absolute; inset: 0; background: var(--tint); }
+:root[data-photo] { --tint: rgb(255 255 255 / .45); }
+:root[data-photo][data-theme="dark"] { --tint: rgb(0 0 0 / .4); }
+:root[data-photo] body { background: transparent; }
+:root[data-photo] .chapter { text-shadow: 0 0 12px var(--bg), 0 0 2px var(--bg); }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -44,6 +63,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 }
 .topbar h1 { flex: 1; margin: 0; font-size: 17px; font-weight: 600; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .icon-btn { width: 44px; height: 44px; display: grid; place-items: center; color: var(--accent); border-radius: 10px; }
+.icon-btn.small { width: 36px; color: var(--muted); }
 .pill-btn { min-width: 44px; height: 32px; padding: 0 12px; border-radius: 16px; background: var(--chip); color: var(--accent); font-weight: 700; font-size: 14px; }
 
 /* Content */

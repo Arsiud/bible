@@ -286,6 +286,7 @@ function toggleTranslationMenu(show = els.translationMenu.hidden) {
 
 els.translationBtn.addEventListener("click", (event) => {
   event.stopPropagation();
+  toggleDisplayMenu(false);
   toggleTranslationMenu();
 });
 document.addEventListener("click", (event) => {
@@ -317,6 +318,92 @@ els.settings.addEventListener("close", () => {
   esvCache.clear();
   if (state.translation === "ESV") render();
 });
+
+/* ---------- Display mode ---------- */
+
+const DISPLAY_MODES = { device: "Match device", light: "Light", dark: "Dark", photo: "Photo background" };
+const display = {
+  mode: store.get("display", "device"),
+  photo: store.get("bgPhoto", null),      // { url (JPEG data URL), tone: "light" | "dark" }
+};
+
+function applyDisplay() {
+  const root = document.documentElement;
+  const photo = display.mode === "photo" && display.photo;
+  const theme = photo ? display.photo.tone : display.mode === "device" ? null : display.mode;
+  if (theme) root.dataset.theme = theme; else delete root.dataset.theme;
+  if (photo) root.dataset.photo = ""; else delete root.dataset.photo;
+  $("backdrop").hidden = !photo;
+  $("backdrop").style.backgroundImage = photo ? `url("${display.photo.url}")` : "";
+  document.querySelector('meta[name="theme-color"]').content = getComputedStyle(root).getPropertyValue("--bg").trim();
+}
+
+// Shrinks the photo so it fits in the device's storage, and measures how bright it is
+// so the text can go dark on light photos and light on dark ones.
+function preparePhoto(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const sample = document.createElement("canvas");
+      sample.width = sample.height = 24;
+      sample.getContext("2d").drawImage(canvas, 0, 0, 24, 24);
+      const px = sample.getContext("2d").getImageData(0, 0, 24, 24).data;
+      let light = 0;
+      for (let i = 0; i < px.length; i += 4) light += 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+      URL.revokeObjectURL(img.src);
+      resolve({ url: canvas.toDataURL("image/jpeg", 0.8), tone: light / (px.length / 4) > 140 ? "light" : "dark" });
+    };
+    img.onerror = () => reject(new Error("Couldn't open that photo."));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+function toggleDisplayMenu(show = $("displayMenu").hidden) {
+  if (show) {
+    $("displayMenu").innerHTML = Object.entries(DISPLAY_MODES).map(([mode, label]) =>
+      `<button data-display="${mode}" role="menuitem">${label}<span class="check">${mode === display.mode && (mode !== "photo" || display.photo) ? "✓" : ""}</span></button>`
+    ).join("") + (display.photo ? `<hr><button data-display="change" role="menuitem">Change photo…</button>` : "");
+  }
+  $("displayMenu").hidden = !show;
+}
+
+$("displayBtn").addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleTranslationMenu(false);
+  toggleDisplayMenu();
+});
+document.addEventListener("click", (event) => {
+  if (!$("displayMenu").hidden && !$("displayMenu").contains(event.target)) toggleDisplayMenu(false);
+});
+$("displayMenu").addEventListener("click", (event) => {
+  const choice = event.target.closest("[data-display]")?.dataset.display;
+  if (!choice) return;
+  toggleDisplayMenu(false);
+  if (choice === "change" || (choice === "photo" && !display.photo)) return $("photoInput").click();
+  display.mode = choice;
+  store.set("display", choice);
+  applyDisplay();
+});
+$("photoInput").addEventListener("change", async () => {
+  const file = $("photoInput").files[0];
+  $("photoInput").value = "";
+  if (!file) return;
+  try {
+    const photo = await preparePhoto(file);
+    store.set("bgPhoto", photo);
+    if (store.get("bgPhoto", null)?.url !== photo.url) toast("That photo is too big to keep. It'll reset when the app restarts.");
+    Object.assign(display, { photo, mode: "photo" });
+    store.set("display", "photo");
+    applyDisplay();
+  } catch (error) { toast(error.message); }
+});
+applyDisplay();
 
 /* ---------- Bookmarks ---------- */
 
