@@ -298,6 +298,10 @@ els.translationMenu.addEventListener("click", (event) => {
   if (button.dataset.settings !== undefined) {
     els.esvKey.value = state.esvKey;
     els.settings.showModal();
+    // The offline cache is named after the app version (see sw.js), so this shows which one is running.
+    caches.keys().then((keys) => {
+      $("appVersion").textContent = `App version: ${keys.find((k) => k.startsWith("bible-"))?.replace("bible-", "") ?? "not installed"}`;
+    }).catch(() => {});
     return;
   }
   saveVisibleVerse();

@@ -126,6 +126,7 @@ dialog label { display: block; margin-bottom: 6px; font-size: 14px; font-weight:
 dialog input { width: 100%; padding: 10px 12px; font: inherit; font-size: 16px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; }
 .hint { font-size: 13px; color: var(--muted); }
 .hint a { color: var(--accent); }
+.version { margin: 12px 0 0; text-align: center; }
 .primary-btn { width: 100%; height: 44px; margin-top: 8px; border-radius: 10px; background: var(--accent); color: var(--surface); font-weight: 600; }
 
 /* Bookmark button */
