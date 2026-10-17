@@ -11,4 +11,4 @@ export const firebaseConfig = {
 
 // The owner's account ID (approves people, sets the shared ESV key). Must match OWNER_UID
 // in ../firebase/firestore.rules. Filled in after the owner's first sign-in.
-export const ownerUid = null;
+export const ownerUid = "ETLT3BOnKyTIFfvyDZKLmltAX603";
