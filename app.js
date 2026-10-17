@@ -323,15 +323,21 @@ els.settings.addEventListener("close", () => {
 /* ---------- Search ---------- */
 
 const PAGE = 100;
-const search = { query: "", results: [], shown: 0, token: 0, esvPage: 0, esvTotal: 0 };
+const search = { query: "", results: [], shown: 0, token: 0, esvPage: 0, esvTotal: 0, exact: null, words: null };
+
+// Small words that don't help find a verse when matching loosely.
+const STOP_WORDS = new Set(("a an and are as at be but by for from he her him his i in is it its me my of on or " +
+  "our she so that the their them then there they this thou thy thee to unto us was we were which who will " +
+  "with ye you your").split(" "));
+
+const queryWords = (query) => query.toLowerCase().replace(/[’‘]/g, "'").match(/[\w']+/g) ?? [];
+// Each word matches from its start, so "love" also finds "loved" and "loveth" (but not "beloved").
+const wordPattern = (w) => w.replace(/'/g, "['’]");
 
 // "god so love" -> matches "God so loved", ignoring case and punctuation between words.
-// Each word matches from its start, so "love" also finds "loved" and "loveth".
 function searchPattern(query) {
-  const words = query.toLowerCase().replace(/[’‘]/g, "'").match(/[\w']+/g);
-  if (!words) return null;
-  const parts = words.map((w) => w.replace(/'/g, "['’]"));   // words are only letters, digits and apostrophes
-  return new RegExp(`\\b${parts.join("[^\\w]+")}`, "gi");
+  const words = queryWords(query);
+  return words.length ? new RegExp(`\\b${words.map(wordPattern).join("[^\\w]+")}`, "gi") : null;
 }
 
 function highlight(text, pattern) {
@@ -351,42 +357,64 @@ async function bibleForSearch() {
 
 async function runSearch(query) {
   const token = ++search.token;
-  search.query = query.trim();
-  search.results = [];
-  search.shown = 0;
+  Object.assign(search, { query: query.trim(), results: [], shown: 0, esvPage: 0, esvTotal: 0 });
   $("searchResults").innerHTML = "";
   if (search.query.length < 2) { $("searchStatus").textContent = ""; return; }
-  const pattern = searchPattern(search.query);
-  if (!pattern) return;
+  search.exact = searchPattern(search.query);
+  if (!search.exact) return;
 
   const books = await bibleForSearch().catch(() => null);
   if (token !== search.token) return;
-  if (!books) return runEsvSearch(token, pattern);
+  if (!books) return runEsvSearch(token);
 
+  // Close matches: verses with most of the meaningful words, in any order and with any wording between.
+  const keywords = [...new Set(queryWords(search.query).filter((w) => !STOP_WORDS.has(w)))];
+  const keyPatterns = keywords.map((w) => new RegExp(`\\b${wordPattern(w)}`, "i"));
+  const needed = keywords.length < 2 ? Infinity : keywords.length === 2 ? 2 : Math.ceil(keywords.length * 0.6);
+  search.words = keywords.length ? new RegExp(`\\b(?:${keywords.map(wordPattern).join("|")})`, "gi") : null;
+
+  const exact = [], close = [];
   books.forEach((b, bi) => b.chapters.forEach((chapter, ci) => chapter.forEach((text, vi) => {
-    pattern.lastIndex = 0;
-    if (text && pattern.test(text)) search.results.push({ book: bi, chapter: ci, verse: vi + 1, text });
+    if (!text) return;
+    const hit = { book: bi, chapter: ci, verse: vi + 1, text };
+    search.exact.lastIndex = 0;
+    if (search.exact.test(text)) return exact.push(hit);
+    if (needed === Infinity) return;
+    const at = keyPatterns.map((p) => text.search(p)).filter((i) => i >= 0);
+    // Rank by how many words match, then by how close together they are.
+    if (at.length >= needed) close.push({ ...hit, score: at.length, span: Math.max(...at) - Math.min(...at), close: true });
   })));
-  const n = search.results.length;
-  $("searchStatus").textContent = n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ${state.translation}` : `No verses found in the ${state.translation}`;
-  showMore(pattern);
+  close.sort((a, b) => b.score - a.score || a.span - b.span);
+  search.results = [...exact, ...close.slice(0, 300)];
+
+  const count = (n, what) => `${n ? n.toLocaleString() : "No"} ${what}${n === 1 ? "" : "es"}`;
+  $("searchStatus").textContent = exact.length || close.length
+    ? `${count(exact.length, "exact match")}${close.length ? ` · ${count(close.length, "close match")}` : ""} in the ${state.translation}`
+    : `Nothing found in the ${state.translation}`;
+  showMore();
 }
 
-function showMore(pattern = searchPattern(search.query)) {
-  const next = search.results.slice(search.shown, search.shown + PAGE);
+function showMore() {
+  const start = search.shown;
+  const next = search.results.slice(start, start + PAGE);
   search.shown += next.length;
   document.querySelector("#searchResults .more-btn")?.remove();
-  $("searchResults").insertAdjacentHTML("beforeend", next.map((r) =>
-    `<button class="result" data-go="${r.book},${r.chapter},${r.verse}">` +
-    `<div class="ref">${escapeHTML(`${state.books[r.book].name} ${r.chapter + 1}:${r.verse}`)}</div>` +
-    `<div class="snippet">${highlight(r.text, pattern)}</div></button>`
-  ).join("") + (search.shown < search.results.length || search.esvPage < search.esvTotal
-    ? `<button class="more-btn" data-more>Show more</button>` : ""));
+  let html = "";
+  next.forEach((r, i) => {
+    const previous = search.results[start + i - 1];
+    if (start + i === 0 && !r.close) html += `<div class="results-label">Exact matches</div>`;
+    if (r.close && !previous?.close) html += `<div class="results-label">Close matches</div>`;
+    html += `<button class="result" data-go="${r.book},${r.chapter},${r.verse}">` +
+      `<div class="ref">${escapeHTML(`${state.books[r.book].name} ${r.chapter + 1}:${r.verse}`)}</div>` +
+      `<div class="snippet">${highlight(r.text, r.close ? search.words : search.exact)}</div></button>`;
+  });
+  if (search.shown < search.results.length || search.esvPage < search.esvTotal) html += `<button class="more-btn" data-more>Show more</button>`;
+  $("searchResults").insertAdjacentHTML("beforeend", html);
 }
 
 const ESV_BOOK_NAMES = { Psalm: "Psalms" };
 
-async function runEsvSearch(token, pattern, page = 1) {
+async function runEsvSearch(token, page = 1) {
   const key = state.esvKey.trim() || state.sharedEsvKey;
   if (!key) { $("searchStatus").textContent = "Sign in on the Connection tab to search the ESV."; return; }
   if (page === 1) $("searchStatus").textContent = "Searching the ESV…";
@@ -398,14 +426,16 @@ async function runEsvSearch(token, pattern, page = 1) {
     if (token !== search.token) return;
     search.esvPage = data.page;
     search.esvTotal = data.total_pages;
+    // ESV's search matches all the words, so mark them one by one.
+    search.exact = search.words = new RegExp(`\\b(?:${queryWords(search.query).map(wordPattern).join("|")})`, "gi");
     for (const r of data.results) {
       const m = r.reference.match(/^(.+) (\d+):(\d+)/);
       const book = m && state.books.findIndex((b) => b.name === (ESV_BOOK_NAMES[m[1]] ?? m[1]));
       if (book >= 0) search.results.push({ book, chapter: Number(m[2]) - 1, verse: Number(m[3]), text: r.content });
     }
     const n = data.total_results;
-    $("searchStatus").textContent = n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ESV` : "No verses found in the ESV";
-    showMore(pattern);
+    $("searchStatus").textContent = n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ESV` : "Nothing found in the ESV";
+    showMore();
   } catch {
     if (token === search.token) $("searchStatus").textContent = "Couldn't reach the ESV. Searching the ESV needs an internet connection.";
   }
@@ -436,7 +466,7 @@ $("searchClose").addEventListener("click", closeSearch);
 $("searchResults").addEventListener("click", (event) => {
   if (event.target.closest("[data-more]")) {
     if (search.shown < search.results.length) showMore();
-    else runEsvSearch(search.token, searchPattern(search.query), search.esvPage + 1);
+    else runEsvSearch(search.token, search.esvPage + 1);
     return;
   }
   const result = event.target.closest("[data-go]");

@@ -126,12 +126,14 @@ main { position: fixed; inset: var(--top) 0 var(--bottom) 0; }
 .chapter-grid button.current { background: var(--accent); color: var(--surface); }
 
 /* Search */
-.search-sheet { position: fixed; inset: 0; z-index: 25; display: flex; flex-direction: column; background: var(--bg); padding-top: env(safe-area-inset-top); }
+/* The whole sheet scrolls as one page (a flex-filled results pane rendered with zero height on some iPhones). */
+.search-sheet { position: fixed; inset: 0; z-index: 25; overflow-y: auto; -webkit-overflow-scrolling: touch; background: var(--bg); }
 .search-sheet[hidden] { display: none; }
-.search-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--line); }
+.search-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: calc(8px + env(safe-area-inset-top)) 8px 8px 12px; background: var(--bg); border-bottom: 1px solid var(--line); }
 .search-head input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; font: inherit; font-size: 16px; color: var(--text); background: var(--chip); border: 0; border-radius: 10px; }
 .search-status { padding: 10px 16px 4px; color: var(--muted); font-size: 13px; }
-.search-results { flex: 1; overflow-y: auto; padding: 0 8px calc(16px + env(safe-area-inset-bottom)); }
+.search-results { padding: 0 8px calc(16px + env(safe-area-inset-bottom)); }
+.results-label { max-width: 680px; margin: 0 auto; padding: 16px 8px 4px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .result { display: block; width: 100%; max-width: 680px; margin: 0 auto; padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--line); }
 .result .ref { color: var(--accent); font-size: 14px; font-weight: 600; }
 .result .snippet { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; line-height: 1.45; }
