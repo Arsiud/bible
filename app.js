@@ -4,6 +4,7 @@ const TRANSLATIONS = {
   WEB: "World English Bible",   // the default
   KJV: "King James Version",
   ASV: "American Standard Version",
+  RST: "Синодальный перевод (Russian Synodal)",
   ESV: "English Standard Version",
   NIV: "New International Version",
   NASB: "New American Standard Bible (2020)",
@@ -46,12 +47,35 @@ const emit = (name, detail) => window.dispatchEvent(new CustomEvent(`bible:${nam
 const esvCache = new Map();                   // in-memory only, per ESV API terms
 
 // Public-domain translations bundled with the app (and cached by sw.js for offline use).
-const BUNDLED = { WEB: "web.json", ASV: "asv.json" };
+const BUNDLED = { WEB: "web.json", ASV: "asv.json", RST: "rst.json" };
+
+// The Russian Synodal (rst.json) was converted to English (KJV) verse numbering so places, bookmarks
+// and family notes line up across translations. Book names show in Russian, and Psalms also show the
+// Synodal number Russian readers know (English Psalm 23 is Synodal 22).
+const RUSSIAN_BOOKS = ("Бытие|Исход|Левит|Числа|Второзаконие|Иисус Навин|Судьи|Руфь|1 Царств|2 Царств|3 Царств|" +
+  "4 Царств|1 Паралипоменон|2 Паралипоменон|Ездра|Неемия|Есфирь|Иов|Псалтирь|Притчи|Екклесиаст|Песнь песней|" +
+  "Исаия|Иеремия|Плач Иеремии|Иезекииль|Даниил|Осия|Иоиль|Амос|Авдий|Иона|Михей|Наум|Аввакум|Софония|Аггей|" +
+  "Захария|Малахия|От Матфея|От Марка|От Луки|От Иоанна|Деяния|Римлянам|1 Коринфянам|2 Коринфянам|Галатам|" +
+  "Ефесянам|Филиппийцам|Колоссянам|1 Фессалоникийцам|2 Фессалоникийцам|1 Тимофею|2 Тимофею|Титу|Филимону|" +
+  "Евреям|Иакова|1 Петра|2 Петра|1 Иоанна|2 Иоанна|3 Иоанна|Иуды|Откровение").split("|");
+let synodalPsalms = null;   // English psalm number -> Synodal number, once rst.json has loaded
+const PSALMS = 18;
+
+function bookName(book) {
+  return state.translation === "RST" ? RUSSIAN_BOOKS[book] : state.books[book].name;
+}
+function chapterLabel(book, chapter) {
+  const synodal = state.translation === "RST" && book === PSALMS && synodalPsalms?.[chapter];
+  return `${bookName(book)} ${chapter + 1}` + (synodal && synodal !== chapter + 1 ? ` (${synodal})` : "");
+}
 const bundled = new Map();                    // code -> Promise of books
 
 function loadBundled(code) {
   if (!bundled.has(code)) {
-    bundled.set(code, fetch(BUNDLED[code]).then((r) => r.json()).catch((error) => {
+    bundled.set(code, fetch(BUNDLED[code]).then((r) => r.json()).then((books) => {
+      if (code === "RST") synodalPsalms = books[PSALMS].synodalChapters;
+      return books;
+    }).catch((error) => {
       bundled.delete(code);
       throw new Error(`Couldn't load the ${code}. Check your connection and try again.`);
     }));
@@ -206,16 +230,18 @@ let renderToken = 0;
 
 async function render({ restoreVerse = state.verse } = {}) {
   const token = ++renderToken;
-  const bookName = state.books[state.book].name;
-  if (!els.bibleView.hidden) els.title.textContent = `${bookName} ${state.chapter + 1}`;
+  if (state.translation === "RST") await loadBundled("RST").catch(() => {});   // for Synodal psalm numbers
+  if (token !== renderToken) return;
+  const label = chapterLabel(state.book, state.chapter);
+  if (!els.bibleView.hidden) els.title.textContent = label;
   els.translationBtn.textContent = state.translation;
-  document.title = `${bookName} ${state.chapter + 1} · Bible`;
+  document.title = `${label} · Bible`;
 
   let html;
   try {
     const verses = await getVerses();
     if (token !== renderToken) return;   // a newer chapter was requested meanwhile
-    html = `<h2>${escapeHTML(bookName)} ${state.chapter + 1}</h2>` +
+    html = `<h2>${escapeHTML(label)}</h2>` +
       verses.map((text, i) => !text ? "" :
         `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}</p>`
       ).join("") +
@@ -245,7 +271,7 @@ function neighbor(step) {
 
 function navButtons() {
   const prev = neighbor(-1), next = neighbor(1);
-  const label = (n) => `${state.books[n.book].name} ${n.chapter + 1}`;
+  const label = (n) => `${bookName(n.book)} ${n.chapter + 1}`;
   return `<div class="nav-row">` +
     (prev ? `<button data-go="${prev.book},${prev.chapter}">‹ ${escapeHTML(label(prev))}</button>` : "") +
     `<span class="spacer"></span>` +
@@ -316,7 +342,7 @@ function showBooks() {
   els.drawerBack.hidden = true;
   const rows = (from, to) => state.books.slice(from, to).map((b, i) =>
     `<button class="book-row${from + i === state.book ? " current" : ""}" data-book="${from + i}">` +
-    `${escapeHTML(b.name)}<span class="count">${b.chapters.length}</span></button>`
+    `${escapeHTML(bookName(from + i))}<span class="count">${b.chapters.length}</span></button>`
   ).join("");
   els.drawerBody.innerHTML =
     `<div class="section-label">Old Testament</div>${rows(0, 39)}` +
@@ -325,7 +351,7 @@ function showBooks() {
 }
 
 function showChapters(book) {
-  els.drawerTitle.textContent = state.books[book].name;
+  els.drawerTitle.textContent = bookName(book);
   els.drawerBack.hidden = false;
   els.drawerBody.innerHTML = `<div class="chapter-grid">` +
     state.books[book].chapters.map((_, c) =>
@@ -402,16 +428,20 @@ const search = { query: "", results: [], shown: 0, token: 0, esvPage: 0, esvTota
 // Small words that don't help find a verse when matching loosely.
 const STOP_WORDS = new Set(("a an and are as at be but by for from he her him his i in is it its me my of on or " +
   "our she so that the their them then there they this thou thy thee to unto us was we were which who will " +
-  "with ye you your").split(" "));
+  "with ye you your " +
+  "и в во не на я что он с со а как к ко по но его от о об у же бы то же ли ни да за из ее её их мы вы ты").split(" "));
 
-const queryWords = (query) => query.toLowerCase().replace(/[’‘]/g, "'").match(/[\w']+/g) ?? [];
+// Words in any alphabet (Latin or Cyrillic); \b and \w only understand Latin letters.
+const queryWords = (query) => query.toLowerCase().replace(/[’‘]/g, "'").match(/[\p{L}\p{N}']+/gu) ?? [];
+const WORD_START = "(?<![\\p{L}\\p{N}])";
+const BETWEEN_WORDS = "[^\\p{L}\\p{N}]+";
 // Each word matches from its start, so "love" also finds "loved" and "loveth" (but not "beloved").
 const wordPattern = (w) => w.replace(/'/g, "['’]");
 
 // "god so love" -> matches "God so loved", ignoring case and punctuation between words.
 function searchPattern(query) {
   const words = queryWords(query);
-  return words.length ? new RegExp(`\\b${words.map(wordPattern).join("[^\\w]+")}`, "gi") : null;
+  return words.length ? new RegExp(`${WORD_START}${words.map(wordPattern).join(BETWEEN_WORDS)}`, "giu") : null;
 }
 
 function highlight(text, pattern) {
@@ -443,9 +473,9 @@ async function runSearch(query) {
 
   // Close matches: verses with most of the meaningful words, in any order and with any wording between.
   const keywords = [...new Set(queryWords(search.query).filter((w) => !STOP_WORDS.has(w)))];
-  const keyPatterns = keywords.map((w) => new RegExp(`\\b${wordPattern(w)}`, "i"));
+  const keyPatterns = keywords.map((w) => new RegExp(`${WORD_START}${wordPattern(w)}`, "iu"));
   const needed = keywords.length < 2 ? Infinity : keywords.length === 2 ? 2 : Math.ceil(keywords.length * 0.6);
-  search.words = keywords.length ? new RegExp(`\\b(?:${keywords.map(wordPattern).join("|")})`, "gi") : null;
+  search.words = keywords.length ? new RegExp(`${WORD_START}(?:${keywords.map(wordPattern).join("|")})`, "giu") : null;
 
   const exact = [], close = [];
   books.forEach((b, bi) => b.chapters.forEach((chapter, ci) => chapter.forEach((text, vi) => {
@@ -479,7 +509,7 @@ function showMore() {
     if (start + i === 0 && !r.close) html += `<div class="results-label">Exact matches</div>`;
     if (r.close && !previous?.close) html += `<div class="results-label">Close matches</div>`;
     html += `<button class="result" data-go="${r.book},${r.chapter},${r.verse}">` +
-      `<div class="ref">${escapeHTML(`${state.books[r.book].name} ${r.chapter + 1}:${r.verse}`)}</div>` +
+      `<div class="ref">${escapeHTML(`${bookName(r.book)} ${r.chapter + 1}:${r.verse}`)}</div>` +
       `<div class="snippet">${highlight(r.text, r.close ? search.words : search.exact)}</div></button>`;
   });
   if (search.shown < search.results.length || search.esvPage < search.esvTotal || search.nivOffset < search.nivTotal) {
@@ -495,7 +525,7 @@ async function runApiSearch(token, offset = 0) {
   try {
     const data = await apiBible(`/bibles/${await apiBibleId(code)}/search`, { query: search.query, limit: PAGE, offset }, code);
     if (token !== search.token) return;
-    search.exact = search.words = new RegExp(`\\b(?:${queryWords(search.query).map(wordPattern).join("|")})`, "gi");
+    search.exact = search.words = new RegExp(`${WORD_START}(?:${queryWords(search.query).map(wordPattern).join("|")})`, "giu");
     for (const v of data.verses ?? []) {
       const [code, c, verse] = v.id.split(".");
       const book = BOOK_CODES.indexOf(code);
@@ -526,7 +556,7 @@ async function runEsvSearch(token, page = 1) {
     search.esvPage = data.page;
     search.esvTotal = data.total_pages;
     // ESV's search matches all the words, so mark them one by one.
-    search.exact = search.words = new RegExp(`\\b(?:${queryWords(search.query).map(wordPattern).join("|")})`, "gi");
+    search.exact = search.words = new RegExp(`${WORD_START}(?:${queryWords(search.query).map(wordPattern).join("|")})`, "giu");
     for (const r of data.results) {
       const m = r.reference.match(/^(.+) (\d+):(\d+)/);
       const book = m && state.books.findIndex((b) => b.name === (ESV_BOOK_NAMES[m[1]] ?? m[1]));
@@ -820,7 +850,7 @@ document.querySelectorAll(".tab").forEach((tab) => {
     if (tab.dataset.view === "bookmarksView") renderBookmarks();
     // The place may have changed while the reader was hidden (e.g. synced from another device).
     if (reading && state.verse > 1) $(`v${state.verse}`)?.scrollIntoView({ block: "start" });
-    els.title.textContent = reading ? `${state.books[state.book].name} ${state.chapter + 1}`
+    els.title.textContent = reading ? chapterLabel(state.book, state.chapter)
       : tab.querySelector("span").textContent;
   });
 });

@@ -1,6 +1,6 @@
 // Caches the app and the KJV so it opens offline. Bump VERSION when files change.
-const VERSION = "bible-v18";
-const FILES = ["./", "index.html", "style.css", "app.js", "connect.js", "firebase-config.js", "kjv.json", "web.json", "asv.json", "manifest.json",
+const VERSION = "bible-v19";
+const FILES = ["./", "index.html", "style.css", "app.js", "connect.js", "firebase-config.js", "kjv.json", "web.json", "asv.json", "rst.json", "manifest.json",
                "icon-180.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (event) => {
