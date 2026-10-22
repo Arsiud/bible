@@ -45,6 +45,7 @@ let needsNickname = false;
 let signInMode = "signin";
 const groups = new Map(); // code -> { name, members: [], notes: [], unsubs: [] }
 let people = [];          // owner only: everyone's profile
+let managing = null;      // owner only: the group whose Add people panel is open
 let unsubs = [];
 let positionChecked = false;
 
@@ -304,6 +305,39 @@ async function leaveGroup(code) {
   await setDoc(userRef(), { groups: arrayRemove(code) }, { merge: true });
 }
 
+// The owner can put anyone who has signed up straight into a group, or take them out.
+// Their own app sees the new code in their profile and starts following the group.
+async function addToGroup(code, uid) {
+  const person = people.find((p) => p.uid === uid);
+  const at = person?.position ?? { book: 0, chapter: 0 };
+  await setDoc(doc(db, "groups", code, "members", uid),
+    { nickname: person?.nickname ?? "?", book: at.book, chapter: at.chapter, updated: at.updated ?? Date.now() });
+  await setDoc(doc(db, "users", uid), { groups: arrayUnion(code) }, { merge: true });
+  return true;
+}
+
+async function removeFromGroup(code, uid) {
+  await deleteDoc(doc(db, "groups", code, "members", uid));
+  await setDoc(doc(db, "users", uid), { groups: arrayRemove(code) }, { merge: true });
+}
+
+function renderManage(code, group) {
+  const inGroup = new Set(group.members.map((m) => m.uid));
+  const others = people.filter((p) => p.uid !== ownerUid && !inGroup.has(p.uid) && !p.blocked)
+    .sort((a, b) => (a.nickname ?? "").localeCompare(b.nickname ?? ""));
+  const row = (p, button) => `<div class="person"><div class="person-main"><b>${escapeHTML(p.nickname ?? "?")}</b>` +
+    (p.email ? `<div class="person-sub">${escapeHTML(p.email)}</div>` : "") + `</div>` +
+    `<div class="person-actions">${button}</div></div>`;
+  return `<div class="manage"><div class="sub-label">Add people</div>` +
+    (others.map((p) => row(p, `<button class="card-btn" data-add-person="${p.uid}" data-group="${code}">Add</button>`)).join("") ||
+      `<p class="list-empty" style="padding:4px 14px 8px">Everyone who has signed up is already in this group.</p>`) +
+    (group.members.some((m) => m.uid !== user.uid)
+      ? `<div class="sub-label">In this group</div>` + group.members.filter((m) => m.uid !== user.uid).map((m) =>
+        row(m, `<button class="link-btn" data-remove-person="${m.uid}" data-group="${code}">Remove</button>`)).join("")
+      : "") +
+    `</div>`;
+}
+
 async function invite(code) {
   const url = `${location.origin}${location.pathname}?join=${code}`;
   const text = `Join my Bible reading group "${groups.get(code)?.name ?? code}" (code ${code}): ${url}`;
@@ -417,7 +451,9 @@ function renderView() {
     ).join("");
     return `<div class="group">` +
       `<div class="group-head"><h3>${escapeHTML(group.name)} <span class="code">${code}</span></h3>` +
+      (isOwner() ? `<button class="card-btn" data-manage="${code}">${managing === code ? "Done" : "Add people"}</button>` : "") +
       `<button class="card-btn" data-invite="${code}">Invite</button></div>` +
+      (isOwner() && managing === code ? renderManage(code, group) : "") +
       members +
       (notes ? `<div class="sub-label">Recent notes</div>${notes}` : "") +
       `<div class="group-foot"><button class="link-btn" data-leave="${code}">Leave group</button></div></div>`;
@@ -522,7 +558,18 @@ view.addEventListener("click", async (event) => {
     bible.goTo(book, chapter, verse);
     bible.showTab("bibleView");
   } else if (data.invite) invite(data.invite);
-  else if (data.leave !== undefined) {
+  else if (data.manage) {
+    managing = managing === data.manage ? null : data.manage;
+    renderView();
+  } else if (data.addPerson) {
+    target.disabled = true;
+    const name = people.find((p) => p.uid === data.addPerson)?.nickname ?? "them";
+    if (await attempt(() => addToGroup(data.group, data.addPerson))) toast(`Added ${name}`);
+  } else if (data.removePerson) {
+    const name = groups.get(data.group)?.members.find((m) => m.uid === data.removePerson)?.nickname ?? "this person";
+    if (confirm(`Remove ${name} from ${groups.get(data.group)?.name ?? "this group"}?`))
+      attempt(() => removeFromGroup(data.group, data.removePerson));
+  } else if (data.leave !== undefined) {
     if (confirm(`Leave ${groups.get(data.leave)?.name ?? "this group"}?`)) attempt(() => leaveGroup(data.leave));
   } else if (data.create !== undefined) {
     const name = prompt("Name your group", "Reading group")?.trim();

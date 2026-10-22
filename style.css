@@ -238,3 +238,5 @@ dialog .spaced { margin-top: 14px; }
 .esv-form label { display: block; margin-bottom: 6px; font-size: 14px; font-weight: 600; }
 .esv-form .inline { display: flex; gap: 8px; align-items: center; }
 .esv-form .field { margin: 0; }
+.manage { padding-bottom: 4px; }
+.manage .person { border-bottom: none; border-top: 1px solid var(--line); }
