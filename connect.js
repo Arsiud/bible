@@ -684,6 +684,11 @@ view.addEventListener("click", async (event) => {
     if (confirm(`Sign out on this device? Your bookmarks stay here, and you can sign back in any time.` +
       `${bible.offline.copied("NASB") ? " The offline NASB will be removed from this device." : ""}`)) authSignOut(auth);
   } else if (data.copyNasb !== undefined) {
+    if (!state.sharedNivKey) {
+      toast("Paste your API.Bible key in “Shared API.Bible (NIV, NASB) key” above and tap Save first");
+      $("shared-niv")?.focus();
+      return;
+    }
     if (confirm("Copy the whole NASB 2020 from API.Bible into your private database? It takes a few minutes; keep the app open.")) copyNasb();
   } else if (data.nasb) {
     const person = people.find((p) => p.uid === data.nasb);
