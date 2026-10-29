@@ -227,8 +227,9 @@ async function loadSharedKeys() {
 
 /* ---------- NASB 2020 offline ---------- */
 
-// Lockman's permission (Oct 28, 2026) covers up to 10 copies for private family use. Read as
-// 10 people (the owner included), each on all their own devices. The owner copies the text from
+// Lockman's permission (Oct 28, 2026) covers up to 10 copies for private family use. Lockman
+// confirmed by email (Oct 29, 2026) that one copy means one person, on all their own devices;
+// the owner counts as one of the 10. The owner copies the text from
 // API.Bible into library/nasb once and picks who may keep it; their devices download it, and it's
 // deleted from a device when its person is taken off the list, blocked, or signs out.
 const NASB_LIMIT = 10;

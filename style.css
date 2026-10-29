@@ -97,6 +97,20 @@ main { position: fixed; inset: var(--top) 0 var(--bottom) 0; }
   backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
   border-top: 1px solid var(--line);
 }
+/* WEB audio player, just above the tabs */
+.player {
+  position: fixed; inset: auto 0 var(--bottom) 0; z-index: 9; height: 64px;
+  display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px;
+  background: var(--bg); border-top: 1px solid var(--line);
+}
+.player-info { flex: none; width: 34%; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.player-info b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.player-info span { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.player audio { flex: 1; min-width: 0; height: 40px; }
+.player[hidden] { display: none; }
+body.listening main { bottom: calc(var(--bottom) + 64px); }
+body.listening .toast { bottom: calc(var(--bottom) + 76px); }
+.listen-btn { display: inline-flex; align-items: center; gap: 6px; margin: -8px 0 16px; padding: 6px 12px; border-radius: 16px; background: var(--chip); color: var(--accent); font-size: 14px; font-weight: 600; }
 .tab { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; font-size: 11px; font-weight: 500; color: var(--muted); }
 .tab.active { color: var(--accent); }
 

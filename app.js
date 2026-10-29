@@ -302,11 +302,12 @@ async function render({ restoreVerse = state.verse } = {}) {
   try {
     const verses = await getVerses();
     if (token !== renderToken) return;   // a newer chapter was requested meanwhile
-    html = `<h2>${escapeHTML(label)}</h2>` +
+    html = `<h2>${escapeHTML(label)}</h2>` + listenButton() +
       verses.map((text, i) => !text ? "" :
         `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}</p>`
       ).join("") +
       (state.translation === "ESV" ? `<p class="copyright">${ESV_COPYRIGHT}</p>` : "") +
+      (state.translation === "WEB" ? `<p class="copyright">Audio: World English Bible read by Winfred W. Henson (public domain), from eBible.org.</p>` : "") +
       (isApiTranslation(state.translation) ? copyrightNotice(API_TRANSLATIONS[state.translation]) : "");
   } catch (error) {
     if (token !== renderToken) return;
@@ -351,6 +352,7 @@ function goTo(book, chapter, verse = 1, { updated = Date.now() } = {}) {
 }
 
 els.chapter.addEventListener("click", (event) => {
+  if (event.target.closest("[data-listen]")) return toggleListening();
   const verse = event.target.closest(".verse");
   if (verse) return emit("versetap", { verse: Number(verse.dataset.verse) });
   const button = event.target.closest("[data-go]");
@@ -358,6 +360,90 @@ els.chapter.addEventListener("click", (event) => {
   const [book, chapter] = button.dataset.go.split(",").map(Number);
   goTo(book, chapter);
 });
+
+/* ---------- Listening (WEB audio) ---------- */
+
+// The World English Bible read by Winfred W. Henson (public domain), streamed chapter by chapter
+// from eBible.org. web-audio.json maps each chapter to its file (built by tools/web_audio_index.py).
+const audio = $("audio");
+const listening = { book: null, chapter: null, index: null };
+const isPlayingHere = () => listening.book === state.book && listening.chapter === state.chapter && !audio.paused;
+
+function listenButton() {
+  if (state.translation !== "WEB") return "";
+  return `<button class="listen-btn" data-listen>${isPlayingHere() ? "❚❚ Pause" : "▶ Listen"}</button>`;
+}
+function updateListenButton() {
+  const button = els.chapter.querySelector("[data-listen]");
+  if (button) button.textContent = isPlayingHere() ? "❚❚ Pause" : "▶ Listen";
+}
+
+async function audioIndex() {
+  listening.index ??= fetch("web-audio.json").then((r) => r.json()).catch((error) => { listening.index = null; throw error; });
+  return listening.index;
+}
+
+async function listen(book, chapter) {
+  let url;
+  try {
+    const { base, books } = await audioIndex();
+    const [folder, files] = books[book];
+    url = base + encodeURIComponent(folder) + "/" + encodeURIComponent(files[chapter]);
+  } catch {
+    return toast("Couldn't load the audio. Listening needs an internet connection.");
+  }
+  Object.assign(listening, { book, chapter });
+  audio.src = url;
+  $("playerTitle").textContent = `${state.books[book].name} ${chapter + 1}`;
+  $("player").hidden = false;
+  document.body.classList.add("listening");
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: `${state.books[book].name} ${chapter + 1}`, artist: "Winfred W. Henson", album: "World English Bible",
+    });
+  }
+  audio.play().catch((error) => { if (error.name !== "AbortError") toast("Couldn't play the audio. Check your connection."); });
+}
+
+function toggleListening() {
+  if (listening.book === state.book && listening.chapter === state.chapter) {
+    if (audio.paused) audio.play().catch(() => toast("Couldn't play the audio. Check your connection."));
+    else audio.pause();
+  } else listen(state.book, state.chapter);
+}
+
+function stopListening() {
+  audio.pause();
+  audio.removeAttribute("src");
+  audio.load();
+  Object.assign(listening, { book: null, chapter: null });
+  $("player").hidden = true;
+  document.body.classList.remove("listening");
+  updateListenButton();
+}
+
+// Next or previous chapter; the reader follows along if it was showing the chapter being read.
+function listenStep(step) {
+  if (listening.book === null) return;
+  const following = listening.book === state.book && listening.chapter === state.chapter;
+  const saved = { book: state.book, chapter: state.chapter };
+  Object.assign(state, { book: listening.book, chapter: listening.chapter });
+  const next = neighbor(step);
+  Object.assign(state, saved);
+  if (!next) return stopListening();
+  if (following) goTo(next.book, next.chapter);
+  listen(next.book, next.chapter);
+}
+
+audio.addEventListener("ended", () => listenStep(1));
+audio.addEventListener("play", updateListenButton);
+audio.addEventListener("pause", updateListenButton);
+audio.addEventListener("error", () => { if (audio.getAttribute("src")) toast("Couldn't play the audio. Listening needs an internet connection."); });
+$("playerClose").addEventListener("click", stopListening);
+if ("mediaSession" in navigator) {
+  navigator.mediaSession.setActionHandler("nexttrack", () => listenStep(1));
+  navigator.mediaSession.setActionHandler("previoustrack", () => listenStep(-1));
+}
 
 /* ---------- Remembering the reading position ---------- */
 
