@@ -125,9 +125,11 @@ const API_TRANSLATIONS = {
   },
   NASB: {
     find: (b) => /New American Standard Bible 2020/i.test(b.name),   // never the 1995 edition
-    link: "https://www.lockman.org",   // Lockman requires a clickable link to its site in apps
-    copyright: "Scripture quotations taken from the (NASB®) New American Standard Bible®, Copyright © 1960, 1971, " +
-      "1977, 1995, 2020 by The Lockman Foundation. Used by permission. All rights reserved. lockman.org",
+    // Wording from Lockman's permission letter (Oct 28, 2026); www.Lockman.org must be a working link.
+    link: "https://www.Lockman.org",
+    fixedNotice: true,
+    copyright: "Scripture quotations taken from the New American Standard Bible® (NASB® 2020) Copyright © 1960, " +
+      "1971, 1977, 1995, 2020 by The Lockman Foundation. Used by permission. All rights reserved.",
   },
 };
 for (const t of Object.values(API_TRANSLATIONS)) Object.assign(t, { bibleId: null, cache: new Map() });
@@ -162,7 +164,7 @@ async function apiBibleId(code) {
   const found = (await apiBible("/bibles", { language: "eng" }, code)).find(t.find);
   if (!found) throw new Error(`The ${code} isn't enabled for this key yet. Add it in the API.Bible dashboard.`);
   t.bibleId = found.id;
-  apiBible(`/bibles/${found.id}`, {}, code).then((b) => { if (b?.copyright) t.copyright = b.copyright; }).catch(() => {});
+  apiBible(`/bibles/${found.id}`, {}, code).then((b) => { if (b?.copyright && !t.fixedNotice) t.copyright = b.copyright; }).catch(() => {});
   return t.bibleId;
 }
 
