@@ -240,3 +240,5 @@ dialog .spaced { margin-top: 14px; }
 .esv-form .field { margin: 0; }
 .manage { padding-bottom: 4px; }
 .manage .person { border-bottom: none; border-top: 1px solid var(--line); }
+.person-actions { flex-wrap: wrap; justify-content: flex-end; }
+.card-btn:disabled, .link-btn:disabled { opacity: .4; }

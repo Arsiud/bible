@@ -100,11 +100,70 @@ function escapeHTML(text) {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
+/* ---------- Offline licensed copies ---------- */
+
+// Lockman permits a private family copy of the NASB 2020 (letter of Oct 28, 2026: up to 10 people,
+// free, family only). The owner copies it into the private database once; each permitted person's
+// devices keep it in IndexedDB, never in the public site's files or the service worker cache.
+const offline = {};   // code -> { books, copied }
+
+function idb(mode, work) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open("bible-offline", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("translations");
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction("translations", mode);
+      const req = work(tx.objectStore("translations"));
+      tx.oncomplete = () => { open.result.close(); resolve(req.result); };
+      tx.onerror = () => { open.result.close(); reject(tx.error); };
+    };
+  });
+}
+
+async function loadOffline() {
+  try {
+    const saved = await idb("readonly", (store) => store.get("NASB"));
+    if (saved?.books) offline.NASB = saved;
+  } catch (error) { console.warn("Offline copies unavailable", error); }
+}
+
+// Everything in the Bible from API.Bible, chapter by chapter, for the owner's one-time copy.
+// Not reported to FUMS: copying isn't reading. onProgress(done, total).
+async function copyFromApi(code, onProgress) {
+  const id = await apiBibleId(code);
+  const books = state.books.map((b) => ({ name: b.name, chapters: b.chapters.map(() => null) }));
+  const jobs = books.flatMap((b, bi) => b.chapters.map((_, ci) => [bi, ci]));
+  let done = 0;
+  const worker = async () => {
+    for (let job; (job = jobs.shift());) {
+      const [bi, ci] = job;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const data = await apiBible(`/bibles/${id}/chapters/${BOOK_CODES[bi]}.${ci + 1}`, {
+            "content-type": "text", "include-verse-numbers": "true", "include-titles": "false",
+            "include-notes": "false", "include-chapter-numbers": "false",
+          }, code, { report: false });
+          books[bi].chapters[ci] = splitVerses(data.content);
+          break;
+        } catch (error) {
+          if (attempt === 4) throw new Error(`Stopped at ${books[bi].name} ${ci + 1}: ${error.message}`);
+          await new Promise((r) => setTimeout(r, 2000 * attempt));
+        }
+      }
+      onProgress?.(++done, books.reduce((n, b) => n + b.chapters.length, 0));
+    }
+  };
+  await Promise.all(Array.from({ length: 4 }, worker));
+  return books;
+}
+
 /* ---------- Loading chapters ---------- */
 
 async function getVerses() {
   const { translation, book, chapter } = state;
   if (translation === "KJV") return state.books[book].chapters[chapter];
+  if (offline[translation]) return offline[translation].books[book].chapters[chapter];
   if (BUNDLED[translation]) return (await loadBundled(translation))[book].chapters[chapter];
   if (isApiTranslation(translation)) return fetchApiChapter(translation, book, chapter);
   return fetchESV(`${state.books[book].name} ${chapter + 1}`);
@@ -112,7 +171,7 @@ async function getVerses() {
 
 /* The NIV and NASB (2020) come from API.Bible (non-commercial Starter plan), using one shared key.
    Its terms allow keeping fewer than 500 consecutive verses, so chapters are cached in memory only,
-   like the ESV. Web apps must report what's read through API.Bible's FUMS script (in index.html). */
+   like the ESV. (The offline NASB is kept by Lockman's own permission; see "Offline licensed copies".) Web apps must report what's read through API.Bible's FUMS script (in index.html). */
 const API_BIBLE = "https://rest.api.bible/v1";
 const BOOK_CODES = ("GEN EXO LEV NUM DEU JOS JDG RUT 1SA 2SA 1KI 2KI 1CH 2CH EZR NEH EST JOB PSA PRO ECC SNG " +
   "ISA JER LAM EZK DAN HOS JOL AMO OBA JON MIC NAM HAB ZEP HAG ZEC MAL MAT MRK LUK JHN ACT ROM 1CO 2CO GAL " +
@@ -140,7 +199,7 @@ function copyrightNotice(t) {
   return `<p class="copyright">${escapeHTML(t.copyright)}${link}</p>`;
 }
 
-async function apiBible(path, params = {}, code = state.translation) {
+async function apiBible(path, params = {}, code = state.translation, { report = true } = {}) {
   const key = state.sharedNivKey;
   if (!key) throw new Error(`Sign in on the Connection tab to read the ${code}.`);
   let response;
@@ -153,7 +212,7 @@ async function apiBible(path, params = {}, code = state.translation) {
   if (!response.ok) throw new Error(`Couldn't load this from the ${code}.`);
   const body = await response.json();
   const token = body.meta?.fumsToken ?? body.meta?.fumsId;
-  if (token && window.fums) window.fums("trackView", token);
+  if (report && token && window.fums) window.fums("trackView", token);
   return body.data;
 }
 
@@ -457,6 +516,7 @@ function highlight(text, pattern) {
 
 async function bibleForSearch() {
   if (state.translation === "KJV") return state.books;
+  if (offline[state.translation]) return offline[state.translation].books;
   if (BUNDLED[state.translation]) return loadBundled(state.translation);
   return null;   // ESV, NIV and NASB search online
 }
@@ -833,6 +893,22 @@ window.bible = {
       if (isApiTranslation(state.translation)) render();
     }
   },
+  // Licensed offline copies (NASB): connect.js decides who may keep one.
+  offline: {
+    copied: (code) => offline[code]?.copied ?? 0,
+    copyFromApi,
+    async save(code, books, copied) {
+      await idb("readwrite", (store) => store.put({ books, copied }, code));
+      offline[code] = { books, copied };
+      if (state.translation === code) render();
+    },
+    async remove(code) {
+      if (!offline[code]) return;
+      delete offline[code];
+      await idb("readwrite", (store) => store.delete(code)).catch(() => {});
+      if (state.translation === code) render();
+    },
+  },
   applyBookmarks({ bookmarks, tempBookmark, updated }) {
     state.bookmarks = bookmarks ?? [];
     state.tempBookmark = tempBookmark ?? null;
@@ -870,6 +946,7 @@ async function start() {
   if (!state.books[state.book]) state.book = 0;
   if (!state.books[state.book].chapters[state.chapter]) state.chapter = 0;
   if (!TRANSLATIONS[state.translation]) state.translation = "WEB";
+  await loadOffline();
   render();
   window.bible.ready = true;
   emit("ready");

@@ -7,7 +7,10 @@
 //
 // Firestore layout:
 //   users/{uid}                    { nickname, email, approved, blocked, created, groups: [code],
-//                                    position, bookmarks, tempBookmark, bookmarksUpdated }
+//                                    position, bookmarks, tempBookmark, bookmarksUpdated,
+//                                    offline: ["nasb"] (set by the owner only) }
+//   library/nasb                   { copied, verses }   the owner's private NASB 2020 copy
+//   library/nasb/books/{0..65}     { name, chapters }   chapters as JSON text
 //   config/esv                     { key }   shared ESV key, readable once approved
 //   groups/{code}                  { name, created, createdBy }
 //   groups/{code}/members/{uid}    { nickname, book, chapter, updated }
@@ -19,7 +22,7 @@ import {
   signInWithPopup, GoogleAuthProvider, sendPasswordResetEmail, signOut as authSignOut,
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, onSnapshot,
+  getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, addDoc, onSnapshot,
   query, orderBy, limit, arrayUnion, arrayRemove, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-firestore.js";
 import { firebaseConfig, ownerUid } from "./firebase-config.js";
@@ -99,6 +102,8 @@ if (auth) onAuthStateChanged(auth, async (signedIn) => {
   if (!user) {
     bible.setSharedKey("esv", "");
     bible.setSharedKey("niv", "");
+    nasbChecked = false;
+    bible.offline.remove("NASB");   // the licensed copy stays only with signed-in, permitted people
     renderView();
     highlightVerses();
     return;
@@ -166,6 +171,7 @@ function listen() {
       bible.applyBookmarks({ bookmarks: profile.bookmarks, tempBookmark: profile.tempBookmark, updated: profile.bookmarksUpdated });
     }
     loadSharedKeys();
+    syncNasb();
 
     const codes = new Set(isActive() ? profile.groups ?? [] : []);
     for (const [code, group] of groups) {
@@ -217,6 +223,89 @@ async function loadSharedKeys() {
     console.warn("ESV key not loaded yet", error.code);
     keysLoaded = false;   // try again on the next profile update
   }
+}
+
+/* ---------- NASB 2020 offline ---------- */
+
+// Lockman's permission (Oct 28, 2026) covers up to 10 copies for private family use. Read as
+// 10 people (the owner included), each on all their own devices. The owner copies the text from
+// API.Bible into library/nasb once and picks who may keep it; their devices download it, and it's
+// deleted from a device when its person is taken off the list, blocked, or signs out.
+const NASB_LIMIT = 10;
+let nasbLibrary = null;   // library/nasb: { copied, verses }
+let nasbChecked = false, nasbSyncing = false, nasbCopying = false;
+const hasNasbGrant = (p) => !!p && p.approved && !p.blocked && (p.offline ?? []).includes("nasb");
+const mayKeepNasb = () => isOwner() || hasNasbGrant(profile);
+const nasbPeople = () => 1 + people.filter((p) => p.uid !== ownerUid && hasNasbGrant(p)).length;
+
+async function syncNasb() {
+  if (!mayKeepNasb()) {
+    if (bible.offline.copied("NASB")) {
+      await bible.offline.remove("NASB");
+      toast("The offline NASB was removed from this device");
+    }
+    return;
+  }
+  if (nasbChecked || nasbSyncing) return;
+  nasbSyncing = true;
+  try {
+    nasbLibrary = (await getDoc(doc(db, "library", "nasb"))).data() ?? null;
+    nasbChecked = true;
+    if (nasbLibrary?.copied > bible.offline.copied("NASB")) {
+      const books = [];
+      (await getDocs(collection(db, "library", "nasb", "books"))).forEach((d) => {
+        books[Number(d.id)] = { name: d.data().name, chapters: JSON.parse(d.data().chapters) };
+      });
+      if (books.length !== state.books.length || books.some((b) => !b)) throw new Error("NASB copy is incomplete");
+      if (!mayKeepNasb()) return;   // permission was withdrawn while downloading
+      await bible.offline.save("NASB", books, nasbLibrary.copied);
+      toast("The NASB is now saved on this device for offline reading");
+    }
+  } catch (error) {
+    console.warn("NASB offline copy not downloaded", error);
+  } finally {
+    nasbSyncing = false;
+    renderView();
+  }
+}
+
+// Owner only: copy all of the NASB 2020 from API.Bible into the private library.
+async function copyNasb() {
+  nasbCopying = true;
+  renderView();
+  const progress = (text) => { const el = $("nasbProgress"); if (el) el.textContent = text; };
+  try {
+    const books = await bible.offline.copyFromApi("NASB", (done, total) => progress(`Copying… ${done} of ${total} chapters`));
+    const verses = books.reduce((n, b) => n + b.chapters.reduce((m, c) => m + c.filter(Boolean).length, 0), 0);
+    if (books.some((b) => b.chapters.some((c) => !c?.length)) || verses < 30000) {
+      throw new Error(`The copy looks incomplete (${verses} verses), so it wasn't saved.`);
+    }
+    progress("Saving to your private database…");
+    for (const [i, b] of books.entries()) {
+      await setDoc(doc(db, "library", "nasb", "books", String(i)), { name: b.name, chapters: JSON.stringify(b.chapters) });
+    }
+    const copied = Date.now();
+    await setDoc(doc(db, "library", "nasb"), { copied, verses });
+    nasbLibrary = { copied, verses };
+    await bible.offline.save("NASB", books, copied);
+    toast(`NASB copied: ${verses.toLocaleString()} verses`);
+  } catch (error) {
+    console.error(error);
+    toast(error.message.length < 120 ? error.message : "Couldn't finish copying the NASB.");
+  }
+  nasbCopying = false;
+  renderView();
+}
+
+function renderNasbOwner() {
+  const status = nasbCopying ? `<span id="nasbProgress">Starting…</span>`
+    : nasbLibrary ? `Copied ${new Date(nasbLibrary.copied).toLocaleDateString()} · ${nasbLibrary.verses.toLocaleString()} verses`
+    : "Not copied yet. Copying takes a few minutes; keep the app open.";
+  return `<div class="section-label">NASB 2020 offline</div><div class="group">` +
+    `<div class="person"><div class="person-main"><div class="person-sub">${status}</div>` +
+    `<div class="person-sub">Allowed: ${nasbPeople()} of ${NASB_LIMIT} people, including you (Lockman permission)</div></div>` +
+    `<div class="person-actions"><button class="card-btn" data-copy-nasb ${nasbCopying ? "disabled" : ""}>` +
+    `${nasbLibrary ? "Copy again" : "Copy NASB"}</button></div></div></div>`;
 }
 
 /* ---------- Your place and bookmarks ---------- */
@@ -381,8 +470,12 @@ const pending = () => people.filter((p) => !p.approved && !p.blocked && p.uid !=
 function renderPeople() {
   const row = (p) => {
     const status = p.blocked ? "Blocked" : p.approved ? "Approved" : "Waiting for approval";
+    const granted = hasNasbGrant(p);
+    const nasb = p.approved && !p.blocked
+      ? `<button class="${granted ? "card-btn" : "link-btn"}" data-nasb="${p.uid}" ` +
+        `${!granted && nasbPeople() >= NASB_LIMIT ? "disabled" : ""}>${granted ? "NASB offline ✓" : "NASB offline"}</button>` : "";
     const actions = p.blocked ? `<button class="card-btn" data-person="${p.uid}" data-set="unblock">Unblock</button>`
-      : `${p.approved ? "" : `<button class="card-btn" data-person="${p.uid}" data-set="approve">Approve</button>`}` +
+      : nasb + `${p.approved ? "" : `<button class="card-btn" data-person="${p.uid}" data-set="approve">Approve</button>`}` +
         `<button class="link-btn" data-person="${p.uid}" data-set="block">Block</button>`;
     return `<div class="person"><div class="person-main"><b>${escapeHTML(p.nickname ?? "?")}</b>` +
       `<div class="person-sub">${escapeHTML(p.email ?? "")}</div>` +
@@ -400,7 +493,7 @@ function renderPeople() {
         `<div class="inline"><input class="field" id="shared-${name}" autocomplete="off" autocapitalize="off" spellcheck="false" ` +
         `placeholder="${set ? "Key is set. Paste a new one to replace it" : "Paste the key to share it with approved people"}">` +
         `<button class="card-btn">Save</button></div></form>`;
-    }).join("") + `</div>`;
+    }).join("") + `</div>` + renderNasbOwner();
 }
 
 /* ---------- Connection tab ---------- */
@@ -461,7 +554,10 @@ function renderView() {
 
   // Keep a half-pasted key if the list redraws while the owner is pasting.
   const drafts = Object.keys(SHARED_KEYS).map((name) => $(`shared-${name}`)?.value ?? "");
-  view.innerHTML = header + banner +
+  const nasbNote = !isOwner() && hasNasbGrant(profile)
+    ? `<p class="list-empty">${bible.offline.copied("NASB") ? "The NASB 2020 is saved on this device for offline reading."
+      : nasbSyncing ? "Downloading the NASB 2020 for offline reading…" : "The NASB 2020 will download for offline reading once the owner has copied it."}</p>` : "";
+  view.innerHTML = header + banner + nasbNote +
     `<div class="row-actions"><button class="secondary-btn" data-create>Create group</button>` +
     `<button class="secondary-btn" data-join>Join group</button></div>` +
     `<div class="section-label">Your groups</div>` +
@@ -585,9 +681,19 @@ view.addEventListener("click", async (event) => {
     const nickname = prompt("Your nickname", profile.nickname)?.trim();
     if (nickname && nickname !== profile.nickname) await attempt(() => rename(nickname));
   } else if (data.signout !== undefined) {
-    if (confirm("Sign out on this device? Your bookmarks stay here, and you can sign back in any time.")) authSignOut(auth);
+    if (confirm(`Sign out on this device? Your bookmarks stay here, and you can sign back in any time.` +
+      `${bible.offline.copied("NASB") ? " The offline NASB will be removed from this device." : ""}`)) authSignOut(auth);
+  } else if (data.copyNasb !== undefined) {
+    if (confirm("Copy the whole NASB 2020 from API.Bible into your private database? It takes a few minutes; keep the app open.")) copyNasb();
+  } else if (data.nasb) {
+    const person = people.find((p) => p.uid === data.nasb);
+    const granted = hasNasbGrant(person);
+    if (!granted && nasbPeople() >= NASB_LIMIT) return toast(`Lockman's permission covers ${NASB_LIMIT} people`);
+    attempt(() => setDoc(doc(db, "users", data.nasb), { offline: granted ? arrayRemove("nasb") : arrayUnion("nasb") }, { merge: true }));
+    toast(granted ? `${person.nickname}'s devices will remove the offline NASB` : `${person.nickname} can now keep the NASB offline`);
   } else if (data.person) {
-    const change = { approve: { approved: true }, block: { blocked: true }, unblock: { blocked: false } }[data.set];
+    // Blocking also takes away the offline NASB, so it frees up one of the 10 places.
+    const change = { approve: { approved: true }, block: { blocked: true, offline: arrayRemove("nasb") }, unblock: { blocked: false } }[data.set];
     attempt(() => setDoc(doc(db, "users", data.person), change, { merge: true }));
   }
 });
