@@ -365,7 +365,7 @@ els.chapter.addEventListener("click", (event) => {
 // The ESV read by David Cochran Heath, streamed chapter by chapter from Crossway's audio server.
 // Offered to anyone who can read the ESV (shared or own key), whichever translation is on screen.
 const audio = $("audio");
-const listening = { book: null, chapter: null };
+const listening = { book: null, chapter: null, timings: null, verse: 0 };
 const isPlayingHere = () => listening.book === state.book && listening.chapter === state.chapter && !audio.paused;
 const canListen = () => !!(state.esvKey.trim() || state.sharedEsvKey);
 const listenLabel = () => isPlayingHere() ? "❚❚ Pause" : state.translation === "ESV" ? "▶ Listen" : "▶ Listen (ESV)";
@@ -411,6 +411,7 @@ function stopListening() {
   audio.removeAttribute("src");
   audio.load();
   Object.assign(listening, { book: null, chapter: null });
+  followAlong();
   $("player").hidden = true;
   document.body.classList.remove("listening");
   updateListenButton();
@@ -428,6 +429,37 @@ function listenStep(step) {
   if (following) goTo(next.book, next.chapter);
   listen(next.book, next.chapter);
 }
+
+// Follow along: highlight the verse being read. Verse start times come from the recordings' own
+// chapter marks (tools/esv_audio_timings.py), fetched the first time someone listens.
+function verseTimings() {
+  listening.timings ??= fetch("esv-audio-timings.json").then((r) => r.json()).catch(() => { listening.timings = null; return null; });
+  return listening.timings;
+}
+const isVisible = (el) => {
+  const view = els.bibleView.getBoundingClientRect(), box = el.getBoundingClientRect();
+  return box.bottom > view.top && box.top < view.bottom;
+};
+async function followAlong() {
+  const here = listening.book === state.book && listening.chapter === state.chapter && state.translation !== "RST";
+  let verse = 0;
+  if (here) {
+    const starts = (await verseTimings())?.[listening.book]?.[listening.chapter] ?? [];
+    const now = audio.currentTime * 10;
+    starts.forEach((start, i) => { if (start !== null && start <= now) verse = i + 1; });
+  }
+  if (verse === listening.verse && els.chapter.querySelector(".verse.reading")) return;
+  const old = els.chapter.querySelector(".verse.reading");
+  old?.classList.remove("reading");
+  listening.verse = verse;
+  const el = verse && $(`v${verse}`);
+  if (!el) return;
+  el.classList.add("reading");
+  // Keep it on screen, unless the reader has scrolled away to look at something else.
+  if ((!old || isVisible(old)) && !isVisible(el)) el.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+audio.addEventListener("timeupdate", followAlong);
+window.addEventListener("bible:rendered", () => { listening.verse = 0; if (listening.book !== null) followAlong(); });
 
 audio.addEventListener("ended", () => listenStep(1));
 audio.addEventListener("play", updateListenButton);
