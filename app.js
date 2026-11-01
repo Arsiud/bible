@@ -307,7 +307,6 @@ async function render({ restoreVerse = state.verse } = {}) {
         `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}</p>`
       ).join("") +
       (state.translation === "ESV" ? `<p class="copyright">${ESV_COPYRIGHT}</p>` : "") +
-      (state.translation === "WEB" ? `<p class="copyright">Audio: World English Bible read by Winfred W. Henson (public domain), from eBible.org.</p>` : "") +
       (isApiTranslation(state.translation) ? copyrightNotice(API_TRANSLATIONS[state.translation]) : "");
   } catch (error) {
     if (token !== renderToken) return;
@@ -361,45 +360,40 @@ els.chapter.addEventListener("click", (event) => {
   goTo(book, chapter);
 });
 
-/* ---------- Listening (WEB audio) ---------- */
+/* ---------- Listening (ESV audio) ---------- */
 
-// The World English Bible read by Winfred W. Henson (public domain), streamed chapter by chapter
-// from eBible.org. web-audio.json maps each chapter to its file (built by tools/web_audio_index.py).
+// The ESV read by David Cochran Heath, streamed chapter by chapter from Crossway's audio server.
+// Offered to anyone who can read the ESV (shared or own key), whichever translation is on screen.
 const audio = $("audio");
-const listening = { book: null, chapter: null, index: null };
+const listening = { book: null, chapter: null };
 const isPlayingHere = () => listening.book === state.book && listening.chapter === state.chapter && !audio.paused;
+const canListen = () => !!(state.esvKey.trim() || state.sharedEsvKey);
+const listenLabel = () => isPlayingHere() ? "❚❚ Pause" : state.translation === "ESV" ? "▶ Listen" : "▶ Listen (ESV)";
 
 function listenButton() {
-  if (state.translation !== "WEB") return "";
-  return `<button class="listen-btn" data-listen>${isPlayingHere() ? "❚❚ Pause" : "▶ Listen"}</button>`;
+  if (!canListen()) return "";
+  return `<button class="listen-btn" data-listen>${listenLabel()}</button>`;
 }
 function updateListenButton() {
   const button = els.chapter.querySelector("[data-listen]");
-  if (button) button.textContent = isPlayingHere() ? "❚❚ Pause" : "▶ Listen";
+  if (button) button.textContent = listenLabel();
 }
 
-async function audioIndex() {
-  listening.index ??= fetch("web-audio.json").then((r) => r.json()).catch((error) => { listening.index = null; throw error; });
-  return listening.index;
-}
+// "43003001-43003999" is John 3 (book 43, chapter 3, every verse).
+const audioUrl = (book, chapter) => {
+  const bbccc = String(book + 1).padStart(2, "0") + String(chapter + 1).padStart(3, "0");
+  return `https://audio.esv.org/hw/mq/${bbccc}001-${bbccc}999.mp3`;
+};
 
-async function listen(book, chapter) {
-  let url;
-  try {
-    const { base, books } = await audioIndex();
-    const [folder, files] = books[book];
-    url = base + encodeURIComponent(folder) + "/" + encodeURIComponent(files[chapter]);
-  } catch {
-    return toast("Couldn't load the audio. Listening needs an internet connection.");
-  }
+function listen(book, chapter) {
   Object.assign(listening, { book, chapter });
-  audio.src = url;
+  audio.src = audioUrl(book, chapter);
   $("playerTitle").textContent = `${state.books[book].name} ${chapter + 1}`;
   $("player").hidden = false;
   document.body.classList.add("listening");
   if ("mediaSession" in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: `${state.books[book].name} ${chapter + 1}`, artist: "Winfred W. Henson", album: "World English Bible",
+      title: `${state.books[book].name} ${chapter + 1}`, artist: "David Cochran Heath", album: "ESV Bible",
     });
   }
   audio.play().catch((error) => { if (error.name !== "AbortError") toast("Couldn't play the audio. Check your connection."); });
@@ -971,7 +965,8 @@ window.bible = {
       if (key === state.sharedEsvKey) return;
       state.sharedEsvKey = key;
       esvCache.clear();
-      if (state.translation === "ESV" && !state.esvKey) render();
+      if (!key && !state.esvKey.trim()) stopListening();
+      if (!state.esvKey) render();   // the ESV and its Listen button come and go with the key
     } else if (name === "niv") {
       if (key === state.sharedNivKey) return;
       state.sharedNivKey = key;
