@@ -9,7 +9,7 @@
   --top: calc(52px + env(safe-area-inset-top));
   --bottom: calc(56px + env(safe-area-inset-bottom));
 }
-/* Display mode: "Match device" follows the system; Light, Dark and photo backgrounds set
+/* Display mode: "Match device" follows the system; Light, Dark, Gray and photo backgrounds set
    data-theme on <html> (a photo picks light or dark from how bright it is). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -31,6 +31,18 @@
   --line: #34302b;
   --chip: #2a2622;
 }
+/* Gray: near-black and light gray, softer than Dark; no color at all. */
+:root[data-theme="gray"] {
+  --bg: #121212;
+  --surface: #1a1a1a;
+  --text: #a9a9a9;
+  --muted: #6c6c6c;
+  --accent: #9a9a9a;
+  --line: #2a2a2a;
+  --chip: #212121;
+  color-scheme: dark;   /* the audio player and form fields go dark too */
+}
+:root[data-theme="dark"] { color-scheme: dark; }
 
 /* Photo background: fixed behind everything, tinted so text stays readable. */
 .backdrop { position: fixed; inset: 0; z-index: -1; background: center / cover no-repeat; }

@@ -897,7 +897,7 @@ window.addEventListener("bible:rendered", () => {
 
 /* ---------- Display mode ---------- */
 
-const DISPLAY_MODES = { device: "Match device", light: "Light", dark: "Dark", photo: "Photo background" };
+const DISPLAY_MODES = { device: "Match device", light: "Light", dark: "Dark", gray: "Gray", photo: "Photo background" };
 const display = {
   mode: store.get("display", "device"),
   photo: store.get("bgPhoto", null),      // { url (JPEG data URL), tone: "light" | "dark" }
