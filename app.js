@@ -352,11 +352,11 @@ function goTo(book, chapter, verse = 1, { updated = Date.now() } = {}) {
 
 /* ---------- Swiping between chapters ---------- */
 
-// Swipe left for the next chapter, right for the previous one. To avoid accidental turns it only counts
-// a clearly sideways drag (twice as far across as down) of a quarter of the screen, ignores the screen
-// edges (Safari's back and forward), and the page follows the finger so a short drag springs back.
-const swipe = { id: null, x: 0, y: 0, dx: 0, sideways: null, turning: false, justSwiped: false };
-const EDGE = 24;
+// Swipe left for the next chapter, right for the previous one. A drag counts if it starts out within
+// about 50° of sideways (a thumb's swipe curves); from then on the page follows the finger and scrolling is held off. It turns after
+// 80 px, or on a quick flick; a short slow drag springs back. Screen edges are left to Safari (back/forward).
+const swipe = { id: null, x: 0, y: 0, dx: 0, t: 0, sideways: null, turning: false, justSwiped: false };
+const EDGE = 20;
 const calm = matchMedia("(prefers-reduced-motion: reduce)");
 const slide = (x, ms) => {
   els.chapter.style.transition = ms && !calm.matches ? `transform ${ms}ms ease-out, opacity ${ms}ms ease-out` : "none";
@@ -365,30 +365,37 @@ const slide = (x, ms) => {
 };
 const settled = () => new Promise((done) => setTimeout(done, calm.matches ? 0 : 180));
 
-els.bibleView.addEventListener("pointerdown", (event) => {
-  if (event.pointerType !== "touch" || !event.isPrimary || swipe.turning) return;
-  if (event.clientX < EDGE || event.clientX > innerWidth - EDGE) return;
-  Object.assign(swipe, { id: event.pointerId, x: event.clientX, y: event.clientY, dx: 0, sideways: null, justSwiped: false });
-});
-els.bibleView.addEventListener("pointermove", (event) => {
-  if (event.pointerId !== swipe.id) return;
-  const dx = event.clientX - swipe.x, dy = event.clientY - swipe.y;
-  if (swipe.sideways === null && Math.hypot(dx, dy) > 10) swipe.sideways = Math.abs(dx) > 2 * Math.abs(dy);
+els.bibleView.addEventListener("touchstart", (event) => {
+  if (event.touches.length !== 1 || swipe.turning) return void (swipe.id = null);
+  const touch = event.touches[0];
+  if (touch.clientX < EDGE || touch.clientX > innerWidth - EDGE) return void (swipe.id = null);
+  Object.assign(swipe, { id: touch.identifier, x: touch.clientX, y: touch.clientY, dx: 0, t: event.timeStamp,
+    sideways: null, justSwiped: false });
+}, { passive: true });
+els.bibleView.addEventListener("touchmove", (event) => {
+  const touch = [...event.changedTouches].find((t) => t.identifier === swipe.id);
+  if (!touch) return;
+  if (event.touches.length > 1) { swipe.id = null; if (swipe.sideways) slide(0, 180); return; }   // pinch
+  const dx = touch.clientX - swipe.x, dy = touch.clientY - swipe.y;
+  if (swipe.sideways === null && Math.hypot(dx, dy) > 14) swipe.sideways = Math.abs(dx) > 0.8 * Math.abs(dy);   // within ~50°: thumbs arc
   if (!swipe.sideways) return;
+  event.preventDefault();   // it's ours now: no scrolling while turning the page
   swipe.dx = dx;
   slide(neighbor(dx < 0 ? 1 : -1) ? dx : dx / 4);   // nothing past Genesis 1 or Revelation 22: only a little give
-});
-els.bibleView.addEventListener("pointerup", async (event) => {
-  if (event.pointerId !== swipe.id) return;
+}, { passive: false });
+async function swipeEnd(event) {
+  if (![...event.changedTouches].some((t) => t.identifier === swipe.id)) return;
   swipe.id = null;
   if (!swipe.sideways) return;
   swipe.justSwiped = true;   // the click that follows the release is not a tap on a verse
   setTimeout(() => { swipe.justSwiped = false; }, 400);
   const next = neighbor(swipe.dx < 0 ? 1 : -1);
-  if (!next || Math.abs(swipe.dx) < Math.max(80, innerWidth / 4)) return slide(0, 180);
+  const far = Math.abs(swipe.dx) >= Math.min(80, innerWidth / 5);
+  const flick = Math.abs(swipe.dx) >= 25 && Math.abs(swipe.dx) / (event.timeStamp - swipe.t) > 0.25;   // px per ms, start to finish
+  if (!next || !(far || flick)) return slide(0, 180);
   swipe.turning = true;
   const out = swipe.dx < 0 ? -innerWidth : innerWidth;
-  slide(out, 180);
+  slide(out, 160);
   await settled();
   const rendered = new Promise((done) => {
     addEventListener("bible:rendered", done, { once: true });
@@ -402,12 +409,9 @@ els.bibleView.addEventListener("pointerup", async (event) => {
   await settled();
   els.chapter.style.transition = "";
   swipe.turning = false;
-});
-els.bibleView.addEventListener("pointercancel", (event) => {   // the browser took over (scrolling or zooming)
-  if (event.pointerId !== swipe.id) return;
-  swipe.id = null;
-  if (swipe.sideways) slide(0, 180);
-});
+}
+els.bibleView.addEventListener("touchend", swipeEnd);
+els.bibleView.addEventListener("touchcancel", swipeEnd);   // a turn already dragged far enough still counts
 
 els.chapter.addEventListener("click", (event) => {
   if (swipe.justSwiped) return void (swipe.justSwiped = false);
