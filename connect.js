@@ -563,7 +563,7 @@ function renderView() {
     `<button class="secondary-btn" data-join>Join group</button></div>` +
     `<div class="section-label">Your groups</div>` +
     (cards || `<p class="list-empty">Create a group and invite people, or join one with its code. ` +
-      `Tap any verse while reading to share a note with your group.</p>`) +
+      `Hold any verse while reading to share a note with your group.</p>`) +
     (isOwner() ? renderPeople() : "");
   Object.keys(SHARED_KEYS).forEach((name, i) => { if (drafts[i] && $(`shared-${name}`)) $(`shared-${name}`).value = drafts[i]; });
 }
