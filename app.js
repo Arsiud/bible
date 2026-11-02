@@ -353,7 +353,16 @@ function goTo(book, chapter, verse = 1, { updated = Date.now() } = {}) {
 els.chapter.addEventListener("click", (event) => {
   if (event.target.closest("[data-listen]")) return toggleListening();
   const verse = event.target.closest(".verse");
-  if (verse) return emit("versetap", { verse: Number(verse.dataset.verse) });
+  if (verse) {
+    if (heldVerse) return void (heldVerse = false);   // a long press already opened notes
+    if (followingHere()) return void jumpToVerse(Number(verse.dataset.verse));
+    const hints = store.get("holdHints", 0);   // tapping used to open notes; remind a few times
+    if (hints < 3) {
+      store.set("holdHints", hints + 1);
+      toast("To write a note on a verse, hold it.");
+    }
+    return;
+  }
   const button = event.target.closest("[data-go]");
   if (!button) return;
   const [book, chapter] = button.dataset.go.split(",").map(Number);
@@ -440,8 +449,11 @@ const isVisible = (el) => {
   const view = els.bibleView.getBoundingClientRect(), box = el.getBoundingClientRect();
   return box.bottom > view.top && box.top < view.bottom;
 };
+// The chapter on screen is the one being read (Russian verse numbers differ, so not there).
+const followingHere = () => listening.book === state.book && listening.chapter === state.chapter && state.translation !== "RST";
+
 async function followAlong() {
-  const here = listening.book === state.book && listening.chapter === state.chapter && state.translation !== "RST";
+  const here = followingHere();
   let verse = 0;
   if (here) {
     const starts = (await verseTimings())?.[listening.book]?.[listening.chapter] ?? [];
@@ -459,6 +471,33 @@ async function followAlong() {
   if ((!old || isVisible(old)) && !isVisible(el)) el.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 audio.addEventListener("timeupdate", followAlong);
+
+// Holding a verse opens notes. While listening, tapping a verse plays from there.
+async function jumpToVerse(verse) {
+  const starts = (await verseTimings())?.[listening.book]?.[listening.chapter] ?? [];
+  const start = starts.slice(verse - 1).find((t) => t !== null);   // a verse the ESV omits: the next one
+  if (start === undefined) return toast("Couldn't find that verse in the recording.");
+  audio.currentTime = start / 10;
+  if (audio.paused) audio.play().catch(() => toast("Couldn't play the audio. Check your connection."));
+  followAlong();
+}
+
+let heldVerse = false, holdTimer = null, holdStart = null;
+els.chapter.addEventListener("pointerdown", (event) => {
+  const verse = event.target.closest(".verse");
+  heldVerse = false;
+  if (!verse) return;
+  holdStart = [event.clientX, event.clientY];
+  holdTimer = setTimeout(() => {
+    heldVerse = true;
+    emit("versetap", { verse: Number(verse.dataset.verse) });
+  }, 500);
+});
+els.chapter.addEventListener("pointermove", (event) => {
+  if (holdTimer && Math.hypot(event.clientX - holdStart[0], event.clientY - holdStart[1]) > 10) clearTimeout(holdTimer);
+});
+for (const type of ["pointerup", "pointercancel"]) els.chapter.addEventListener(type, () => clearTimeout(holdTimer));
+els.chapter.addEventListener("contextmenu", (event) => { if (event.target.closest(".verse")) event.preventDefault(); });
 window.addEventListener("bible:rendered", () => { listening.verse = 0; if (listening.book !== null) followAlong(); });
 
 audio.addEventListener("ended", () => listenStep(1));
