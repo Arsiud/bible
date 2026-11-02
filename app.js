@@ -350,7 +350,67 @@ function goTo(book, chapter, verse = 1, { updated = Date.now() } = {}) {
   emit("position");
 }
 
+/* ---------- Swiping between chapters ---------- */
+
+// Swipe left for the next chapter, right for the previous one. To avoid accidental turns it only counts
+// a clearly sideways drag (twice as far across as down) of a quarter of the screen, ignores the screen
+// edges (Safari's back and forward), and the page follows the finger so a short drag springs back.
+const swipe = { id: null, x: 0, y: 0, dx: 0, sideways: null, turning: false, justSwiped: false };
+const EDGE = 24;
+const calm = matchMedia("(prefers-reduced-motion: reduce)");
+const slide = (x, ms) => {
+  els.chapter.style.transition = ms && !calm.matches ? `transform ${ms}ms ease-out, opacity ${ms}ms ease-out` : "none";
+  els.chapter.style.transform = x ? `translateX(${x}px)` : "";
+  els.chapter.style.opacity = x ? Math.max(0.3, 1 - Math.abs(x) / innerWidth) : "";
+};
+const settled = () => new Promise((done) => setTimeout(done, calm.matches ? 0 : 180));
+
+els.bibleView.addEventListener("pointerdown", (event) => {
+  if (event.pointerType !== "touch" || !event.isPrimary || swipe.turning) return;
+  if (event.clientX < EDGE || event.clientX > innerWidth - EDGE) return;
+  Object.assign(swipe, { id: event.pointerId, x: event.clientX, y: event.clientY, dx: 0, sideways: null, justSwiped: false });
+});
+els.bibleView.addEventListener("pointermove", (event) => {
+  if (event.pointerId !== swipe.id) return;
+  const dx = event.clientX - swipe.x, dy = event.clientY - swipe.y;
+  if (swipe.sideways === null && Math.hypot(dx, dy) > 10) swipe.sideways = Math.abs(dx) > 2 * Math.abs(dy);
+  if (!swipe.sideways) return;
+  swipe.dx = dx;
+  slide(neighbor(dx < 0 ? 1 : -1) ? dx : dx / 4);   // nothing past Genesis 1 or Revelation 22: only a little give
+});
+els.bibleView.addEventListener("pointerup", async (event) => {
+  if (event.pointerId !== swipe.id) return;
+  swipe.id = null;
+  if (!swipe.sideways) return;
+  swipe.justSwiped = true;   // the click that follows the release is not a tap on a verse
+  setTimeout(() => { swipe.justSwiped = false; }, 400);
+  const next = neighbor(swipe.dx < 0 ? 1 : -1);
+  if (!next || Math.abs(swipe.dx) < Math.max(80, innerWidth / 4)) return slide(0, 180);
+  swipe.turning = true;
+  const out = swipe.dx < 0 ? -innerWidth : innerWidth;
+  slide(out, 180);
+  await settled();
+  const rendered = new Promise((done) => {
+    addEventListener("bible:rendered", done, { once: true });
+    setTimeout(done, 4000);
+  });
+  goTo(next.book, next.chapter);
+  await rendered;
+  slide(-out / 3, 0);
+  els.chapter.getBoundingClientRect();   // start the slide-in from the other side
+  slide(0, 180);
+  await settled();
+  els.chapter.style.transition = "";
+  swipe.turning = false;
+});
+els.bibleView.addEventListener("pointercancel", (event) => {   // the browser took over (scrolling or zooming)
+  if (event.pointerId !== swipe.id) return;
+  swipe.id = null;
+  if (swipe.sideways) slide(0, 180);
+});
+
 els.chapter.addEventListener("click", (event) => {
+  if (swipe.justSwiped) return void (swipe.justSwiped = false);
   if (event.target.closest("[data-listen]")) return toggleListening();
   const verse = event.target.closest(".verse");
   if (verse) {

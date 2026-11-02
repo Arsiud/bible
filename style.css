@@ -69,6 +69,8 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 /* Content */
 main { position: fixed; inset: var(--top) 0 var(--bottom) 0; }
 .view { position: absolute; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+/* Up and down scrolling stays with the browser; sideways drags turn the chapter (app.js). */
+#bibleView { touch-action: pan-y pinch-zoom; overflow-x: hidden; }
 .chapter {
   max-width: 680px; margin: 0 auto;
   padding: 20px 20px 32px;
