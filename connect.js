@@ -14,7 +14,9 @@
 //   config/esv                     { key }   shared ESV key, readable once approved
 //   groups/{code}                  { name, created, createdBy }
 //   groups/{code}/members/{uid}    { nickname, book, chapter, updated }
-//   groups/{code}/notes/{id}       { uid, nickname, book, chapter, verse, text, created }
+//   users/{uid}/notes/{id}         { book, chapter, verse, verseEnd?, text, created, edited? }   "Just me" notes
+//   groups/{code}/notes/{id}       { uid, nickname, book, chapter, verse, verseEnd?, text, created, edited? }
+//   groups/{code}/replies/{id}     { note, uid, nickname, text, created }   replies to a group note
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
 import {
@@ -22,7 +24,7 @@ import {
   signInWithPopup, GoogleAuthProvider, sendPasswordResetEmail, signOut as authSignOut,
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, addDoc, onSnapshot,
+  getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, deleteField, collection, addDoc, onSnapshot,
   query, orderBy, limit, arrayUnion, arrayRemove, serverTimestamp, runTransaction,
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-firestore.js";
 import { firebaseConfig, ownerUid } from "./firebase-config.js";
@@ -46,7 +48,8 @@ let user = null;          // Firebase Auth user
 let profile = null;       // users/{uid} document, kept live
 let needsNickname = false;
 let signInMode = "signin";
-const groups = new Map(); // code -> { name, members: [], notes: [], unsubs: [] }
+const groups = new Map(); // code -> { name, members: [], notes: [], replies: [], unsubs: [] }
+let privateNotes = [];    // your "Just me" notes
 let people = [];          // owner only: everyone's profile
 let managing = null;      // owner only: the group whose Add people panel is open
 let unsubs = [];
@@ -151,6 +154,7 @@ function listen() {
     profile = snap.data();
     if (!profile) return;
 
+    if (firstLoad) watchPrivateNotes();
     if (firstLoad && isOwner()) watchPeople();
     syncBookmarks(profile);
     if (!positionChecked) {
@@ -179,12 +183,14 @@ function stopListening() {
   groups.forEach((group) => group.unsubs.forEach((u) => u()));
   groups.clear();
   people = [];
+  privateNotes = [];
+  renderPrivateNotes();
 }
 
 function watchGroup(code) {
-  const group = { name: code, members: [], notes: [], unsubs: [] };
+  const group = { name: code, members: [], notes: [], replies: [], unsubs: [] };
   groups.set(code, group);
-  const refresh = () => { renderView(); highlightVerses(); };
+  const refresh = () => { renderView(); highlightVerses(); refreshNotes(); };
   const failed = (error) => console.error(code, error);
   group.unsubs.push(
     onSnapshot(doc(db, "groups", code), (snap) => { group.name = snap.data()?.name ?? code; refresh(); }, failed),
@@ -194,6 +200,10 @@ function watchGroup(code) {
     }, failed),
     onSnapshot(query(collection(db, "groups", code, "notes"), orderBy("created", "desc"), limit(200)), (snap) => {
       group.notes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      refresh();
+    }, failed),
+    onSnapshot(query(collection(db, "groups", code, "replies"), orderBy("created", "desc"), limit(500)), (snap) => {
+      group.replies = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       refresh();
     }, failed),
   );
@@ -614,11 +624,13 @@ function renderView() {
       `<span><b>${escapeHTML(m.nickname)}</b>${m.uid === user.uid ? " (you)" : ""}</span>` +
       `<span><span class="where">${escapeHTML(reference({ ...m, verse: 1 }))}</span> <span class="when">· ${ago(m.updated)}</span></span></button>`
     ).join("");
-    const notes = group.notes.slice(0, 5).map((n) =>
-      `<button class="note" data-go="${n.book},${n.chapter},${n.verse}">` +
-      `<div class="who"><b>${escapeHTML(n.nickname)}</b> on ${escapeHTML(reference(n))} · ${ago(n.created)}</div>` +
-      `<div class="text">${escapeHTML(n.text)}</div></button>`
-    ).join("");
+    const notes = group.notes.slice(0, 5).map((n) => {
+      const replies = group.replies.filter((r) => r.note === n.id).length;
+      return `<button class="note" data-go="${n.book},${n.chapter},${n.verse},${lastVerse(n)}">` +
+        `<div class="who"><b>${escapeHTML(n.nickname)}</b> on ${escapeHTML(bible.verseRef(n))} · ${ago(n.created)}` +
+        `${replies ? ` · ${replies} repl${replies === 1 ? "y" : "ies"}` : ""}</div>` +
+        `<div class="text">${escapeHTML(n.text)}</div></button>`;
+    }).join("");
     return `<div class="group">` +
       `<div class="group-head"><h3>${escapeHTML(group.name)} <span class="code">${code}</span></h3>` +
       (isOwner() ? `<button class="card-btn" data-manage="${code}">${managing === code ? "Done" : "Add people"}</button>` : "") +
@@ -639,7 +651,7 @@ function renderView() {
     `<button class="secondary-btn" data-join>Join group</button></div>` +
     `<div class="section-label">Your groups</div>` +
     (cards || `<p class="list-empty">Create a group and invite people, or join one with its code. ` +
-      `Hold any verse while reading to share a note with your group.</p>`) +
+      `To share a note, hold a verse while reading and tap Note.</p>`) +
     (isOwner() ? renderPeople() : "");
   Object.keys(SHARED_KEYS).forEach((name, i) => { if (drafts[i] && $(`shared-${name}`)) $(`shared-${name}`).value = drafts[i]; });
 }
@@ -727,9 +739,8 @@ view.addEventListener("click", async (event) => {
     try { await sendPasswordResetEmail(auth, email); $("signInError").textContent = `If there's an account for ${email}, a reset link is on its way.`; }
     catch (error) { showError(error); }
   } else if (data.go) {
-    const [book, chapter, verse = 1] = data.go.split(",").map(Number);
-    bible.goTo(book, chapter, verse);
-    bible.showTab("bibleView");
+    const [book, chapter, verse = 1, verseEnd = verse] = data.go.split(",").map(Number);
+    bible.jumpTo(book, chapter, verse, verseEnd);
   } else if (data.invite) invite(data.invite);
   else if (data.manage) {
     managing = managing === data.manage ? null : data.manage;
@@ -782,99 +793,164 @@ view.addEventListener("click", async (event) => {
 
 /* ---------- Verse notes ---------- */
 
-function notesHere(verse) {
-  const found = [];
-  for (const [code, group] of groups) {
-    for (const n of group.notes) {
-      if (n.book === state.book && n.chapter === state.chapter && (verse === undefined || n.verse === verse)) {
-        found.push({ ...n, code });
-      }
-    }
-  }
+// A note is on one verse or a few (verse to verseEnd), and either just for you (users/{uid}/notes)
+// or shared with one group. Group notes can have replies. Pick verses and tap Note to see and write them.
+const lastVerse = (n) => n.verseEnd ?? n.verse;
+const notePath = (n) => n.code ? doc(db, "groups", n.code, "notes", n.id) : doc(db, "users", user.uid, "notes", n.id);
+let noteRange = null;   // { book, chapter, verse, verseEnd? } the dialog is about
+let composing = null;   // { kind: "new" } | { kind: "edit" | "reply", note }
+
+function watchPrivateNotes() {
+  unsubs.push(onSnapshot(query(collection(db, "users", user.uid, "notes"), orderBy("created", "desc"), limit(500)), (snap) => {
+    privateNotes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderPrivateNotes();
+    highlightVerses();
+    refreshNotes();
+  }, (error) => console.error(error)));
+}
+
+// Notes touching verses start..end of a chapter: your own, then everyone's in your groups, oldest first.
+function notesOn(book, chapter, start = 1, end = Infinity) {
+  const on = (n) => n.book === book && n.chapter === chapter && n.verse <= end && lastVerse(n) >= start;
+  const found = privateNotes.filter(on).map((n) => ({ ...n, code: null }));
+  for (const [code, group] of groups) found.push(...group.notes.filter(on).map((n) => ({ ...n, code })));
   return found.sort((a, b) => a.created - b.created);
 }
+bible.noteCount = (s) => user ? notesOn(s.book, s.chapter, s.start, s.end).length : 0;
 
 function highlightVerses() {
   document.querySelectorAll(".verse.noted").forEach((v) => v.classList.remove("noted"));
-  for (const n of notesHere()) document.getElementById(`v${n.verse}`)?.classList.add("noted");
+  for (const n of notesOn(state.book, state.chapter)) {
+    for (let v = n.verse; v <= lastVerse(n); v++) document.getElementById(`v${v}`)?.classList.add("noted");
+  }
 }
 
-let noteVerse = null;
-let editingNote = null;   // { code, id } while changing one of your own notes
+// Keep an open dialog current as notes and replies come in.
+function refreshNotes() { if (noteDialog.open) renderNoteList(); }
 
 function renderNoteList() {
   const many = groups.size > 1;
-  $("noteList").innerHTML = notesHere(noteVerse).map((n) =>
-    `<div class="note"><div class="who"><b>${escapeHTML(n.nickname)}</b>` +
-    `${many ? ` in ${escapeHTML(groups.get(n.code).name)}` : ""} · ${ago(n.created)}${n.edited ? " · edited" : ""}` +
-    (n.uid === user.uid ? ` · <button type="button" class="link-btn" data-edit-note="${n.code}/${n.id}">Edit</button>` : "") +
-    (n.uid === user.uid || isOwner() ? ` · <button type="button" class="link-btn" data-delete="${n.code}/${n.id}">Delete</button>` : "") +
-    `</div><div class="text">${escapeHTML(n.text)}</div></div>`
-  ).join("");
+  const { book, chapter, verse } = noteRange;
+  $("noteList").innerHTML = notesOn(book, chapter, verse, lastVerse(noteRange)).map((n) => {
+    const key = `${n.code ?? ""}/${n.id}`;
+    const mine = !n.code || n.uid === user.uid;
+    const who = n.code ? `<b>${escapeHTML(n.nickname)}</b>${many ? ` in ${escapeHTML(groups.get(n.code).name)}` : ""}` : `<b>Just me</b>`;
+    // Its own verses, when they aren't exactly the ones picked
+    const on = n.verse !== verse || lastVerse(n) !== lastVerse(noteRange) ? ` on ${escapeHTML(bible.verseRef(n))}` : "";
+    const replies = n.code ? groups.get(n.code).replies.filter((r) => r.note === n.id).sort((a, b) => a.created - b.created) : [];
+    return `<div class="note"><div class="who">${who}${on} · ${ago(n.created)}${n.edited ? " · edited" : ""}</div>` +
+      `<div class="text">${escapeHTML(n.text)}</div>` +
+      replies.map((r) => `<div class="reply"><div class="who"><b>${escapeHTML(r.nickname)}</b> · ${ago(r.created)}` +
+        (r.uid === user.uid || isOwner() ? ` · <button type="button" class="link-btn" data-delete-reply="${n.code}/${r.id}">Delete</button>` : "") +
+        `</div><div class="text">${escapeHTML(r.text)}</div></div>`).join("") +
+      `<div class="note-actions">` +
+      (n.code && isActive() ? `<button type="button" class="link-btn" data-reply="${key}">Reply</button>` : "") +
+      (mine ? `<button type="button" class="link-btn" data-edit-note="${key}">Edit</button>` +
+        `<button type="button" class="link-btn" data-note-verses="${key}">Change verses</button>` : "") +
+      (mine || isOwner() ? `<button type="button" class="link-btn" data-delete="${key}">Delete</button>` : "") +
+      `</div></div>`;
+  }).join("");
 }
 
-window.addEventListener("bible:versetap", ({ detail }) => {
+const findNote = (key) => {
+  const [code, id] = key.split("/");
+  const n = code ? groups.get(code)?.notes.find((x) => x.id === id) : privateNotes.find((x) => x.id === id);
+  return n && { ...n, code: code || null };
+};
+
+window.addEventListener("bible:notes", ({ detail }) => {
   if (!db) return;
-  if (!profile || !isActive() || !groups.size) {
-    toast("Join a group on the Connection tab to share notes on verses");
-    return;
-  }
-  noteVerse = detail.verse;
-  $("noteRef").textContent = reference({ book: state.book, chapter: state.chapter, verse: noteVerse });
+  if (!user || !profile) return toast("Sign in on the Connection tab to write notes");
+  noteRange = { book: detail.book, chapter: detail.chapter, verse: detail.verse,
+    ...(detail.verseEnd > detail.verse ? { verseEnd: detail.verseEnd } : {}) };
+  $("noteRef").textContent = bible.verseRef(noteRange);
+  // Who sees it: just you, or one of your groups (the last choice is remembered).
+  const active = isActive() ? [...groups.entries()] : [];
+  $("noteGroup").innerHTML = `<option value="">Just me</option>` +
+    active.map(([code, g]) => `<option value="${code}">${escapeHTML(g.name)}</option>`).join("");
+  const last = store.get("noteAudience", null);
+  $("noteGroup").value = last !== null && (last === "" || groups.has(last)) ? last : active[0]?.[0] ?? "";
   renderNoteList();
-  const select = $("noteGroup");
-  select.innerHTML = [...groups.entries()].map(([code, g]) => `<option value="${code}">${escapeHTML(g.name)}</option>`).join("");
-  select.hidden = $("noteGroupLabel").hidden = groups.size < 2;
-  startNewNote();
+  compose({ kind: "new" });
   noteDialog.returnValue = "";
   noteDialog.showModal();
 });
 
-function startNewNote() {
-  editingNote = null;
-  $("noteText").value = "";
-  $("noteTextLabel").textContent = "Your note";
-  $("noteSave").textContent = "Share";
-  $("noteGroup").hidden = $("noteGroupLabel").hidden = groups.size < 2;
+function compose(next) {
+  composing = next;
+  const { kind, note } = next;
+  $("noteText").value = kind === "edit" ? note.text : "";
+  $("noteTextLabel").textContent = kind === "edit" ? "Edit your note" : kind === "reply" ? `Reply to ${note.nickname}` : "Your note";
+  $("noteGroup").hidden = $("noteGroupLabel").hidden = kind !== "new";
+  updateSaveLabel();
+  if (kind !== "new") $("noteText").focus();
 }
-
-function startEditing(code, id) {
-  const note = groups.get(code)?.notes.find((n) => n.id === id);
-  if (!note) return;
-  editingNote = { code, id };
-  $("noteText").value = note.text;
-  $("noteTextLabel").textContent = "Edit your note";
-  $("noteSave").textContent = "Save";
-  $("noteGroup").hidden = $("noteGroupLabel").hidden = true;
-  $("noteText").focus();
-}
+const updateSaveLabel = () => {
+  $("noteSave").textContent = composing.kind === "reply" ? "Reply"
+    : composing.kind === "new" && $("noteGroup").value ? "Share" : "Save";
+  $("noteText").placeholder = composing.kind === "new" && !$("noteGroup").value ? "A thought, just for you" : "Share a thought with your group";
+};
+$("noteGroup").addEventListener("change", updateSaveLabel);
 
 $("noteList").addEventListener("click", (event) => {
-  const edit = event.target.closest("[data-edit-note]");
-  if (edit) return startEditing(...edit.dataset.editNote.split("/"));
-  const button = event.target.closest("[data-delete]");
-  if (!button || !confirm("Delete this note for everyone?")) return;
-  const [code, id] = button.dataset.delete.split("/");
-  attempt(async () => {
-    await deleteDoc(doc(db, "groups", code, "notes", id));
-    if (editingNote?.id === id) startNewNote();
-    renderNoteList();
-  });
+  const button = event.target.closest("button");
+  if (!button) return;
+  const d = button.dataset;
+  if (d.reply) return compose({ kind: "reply", note: findNote(d.reply) });
+  if (d.editNote) return compose({ kind: "edit", note: findNote(d.editNote) });
+  if (d.noteVerses) {
+    const note = findNote(d.noteVerses);
+    noteDialog.close();
+    return bible.changeVerses(note, "Verses for your note", (start, end) =>
+      attempt(() => updateDoc(notePath(note), { verse: start, verseEnd: end > start ? end : deleteField(), edited: Date.now() })));
+  }
+  if (d.deleteReply) {
+    const [code, id] = d.deleteReply.split("/");
+    if (confirm("Delete this reply?")) attempt(() => deleteDoc(doc(db, "groups", code, "replies", id)));
+    return;
+  }
+  if (d.delete) {
+    const note = findNote(d.delete);
+    if (!note || !confirm(note.code ? "Delete this note (and its replies) for everyone?" : "Delete this note?")) return;
+    attempt(async () => {
+      // Replies first: the rules let a note's author remove them only while the note is there.
+      const replies = note.code ? groups.get(note.code).replies.filter((r) => r.note === note.id) : [];
+      await Promise.all(replies.map((r) => deleteDoc(doc(db, "groups", note.code, "replies", r.id))));
+      await deleteDoc(notePath(note));
+      if (composing?.note?.id === note.id) compose({ kind: "new" });
+    });
+  }
 });
 
 noteDialog.addEventListener("close", () => {
   const text = $("noteText").value.trim().slice(0, 2000);
+  const { kind, note } = composing ?? {};
+  composing = null;
   if (noteDialog.returnValue !== "share" || !text) return;
-  if (editingNote) {
-    const { code, id } = editingNote;
-    editingNote = null;
-    return attempt(() => updateDoc(doc(db, "groups", code, "notes", id), { text, edited: Date.now() }));
+  if (kind === "edit") return attempt(() => updateDoc(notePath(note), { text, edited: Date.now() }));
+  if (kind === "reply") {
+    return attempt(() => addDoc(collection(db, "groups", note.code, "replies"),
+      { note: note.id, uid: user.uid, nickname: profile.nickname, text, created: Date.now() }));
   }
   const code = $("noteGroup").value;
-  const { book, chapter } = state;
-  attempt(() => addDoc(collection(db, "groups", code, "notes"), {
-    uid: user.uid, nickname: profile.nickname, book, chapter, verse: noteVerse, text, created: Date.now(),
-  }));
+  store.set("noteAudience", code);
+  const fields = { ...noteRange, text, created: Date.now() };
+  if (!code) return attempt(() => addDoc(collection(db, "users", user.uid, "notes"), fields));
+  attempt(() => addDoc(collection(db, "groups", code, "notes"), { uid: user.uid, nickname: profile.nickname, ...fields }));
+});
+
+// Your "Just me" notes, under your bookmarks.
+function renderPrivateNotes() {
+  $("myNotes").innerHTML = privateNotes.length ? `<div class="section-label">My notes · just me</div>` +
+    privateNotes.map((n) => `<button class="card note-card" data-go="${n.book},${n.chapter},${n.verse},${lastVerse(n)}">` +
+      `<div class="card-main"><div class="card-ref">${escapeHTML(bible.verseRef(n))}</div>` +
+      `<div class="card-notes">${escapeHTML(n.text)}</div></div></button>`).join("") : "";
+}
+$("myNotes").addEventListener("click", (event) => {
+  const go = event.target.closest("[data-go]");
+  if (!go) return;
+  const [book, chapter, verse, verseEnd] = go.dataset.go.split(",").map(Number);
+  bible.jumpTo(book, chapter, verse, verseEnd);
 });
 
 /* ---------- Start ---------- */

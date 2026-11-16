@@ -38,15 +38,25 @@
     </section>
     <section id="bookmarksView" class="view" hidden>
       <div id="bookmarks" class="list-page"></div>
+      <div id="myNotes" class="list-page"></div>
     </section>
     <section id="connectionView" class="view" hidden>
       <div id="connection" class="list-page"></div>
     </section>
   </main>
 
+  <!-- Back to where you were reading, after jumping somewhere -->
+  <div id="backBar" class="back-bar" hidden>
+    <button id="backBtn" class="back-btn"></button><button id="backClose" class="back-close" aria-label="Dismiss">✕</button>
+  </div>
+
+  <!-- Acting on picked verses -->
+  <div id="verseBar" class="verse-bar" hidden></div>
+
   <div id="player" class="player" hidden>
     <div class="player-info"><b id="playerTitle"></b><span>ESV audio · read by David Cochran Heath</span></div>
     <audio id="audio" controls preload="none"></audio>
+    <button id="speedBtn" class="speed-btn" aria-label="Playback speed">1×</button>
     <button id="playerClose" class="icon-btn" aria-label="Stop listening">✕</button>
   </div>
 
@@ -86,6 +96,72 @@
     <div id="searchResults" class="search-results"></div>
   </section>
 
+  <!-- Compare picked verses across translations -->
+  <section id="compare" class="search-sheet" hidden>
+    <div class="search-head sheet-head"><h2 id="compareTitle">Compare</h2><button type="button" id="compareClose" class="text-btn">Done</button></div>
+    <div id="compareList" class="search-results compare-list"></div>
+  </section>
+
+  <!-- Related passages for picked verses -->
+  <section id="related" class="search-sheet" hidden>
+    <div class="search-head sheet-head"><h2 id="relatedTitle">Related</h2><button type="button" id="relatedClose" class="text-btn">Done</button></div>
+    <div id="relatedList" class="search-results"></div>
+  </section>
+
+  <!-- How to use the app (from the bottom of the books list) -->
+  <section id="help" class="search-sheet" hidden>
+    <div class="search-head sheet-head"><h2>How to use this app</h2><button type="button" id="helpClose" class="text-btn">Done</button></div>
+    <article class="help">
+      <h3>Reading</h3>
+      <ul>
+        <li>Tap <b>☰</b> to choose a book and chapter. Swipe left or right on the text for the next or previous chapter.</li>
+        <li>The button at the top right switches translations: WEB, KJV, ASV, Russian Synodal, and once you're signed in and approved, ESV, NIV and NASB.</li>
+        <li>The <b>eye</b> sets the look: match your phone, light, dark, gray or a photo of your own, plus <b>text size</b> and <b>spacing</b>.</li>
+        <li><b>Related passages</b> at the end of each chapter lists other verses on the same things; tap one to go there.</li>
+        <li>The app remembers where you were, on all your devices once you're signed in.</li>
+      </ul>
+      <h3>Picking verses</h3>
+      <ul>
+        <li><b>Hold</b> a verse to pick it. <b>Tap</b> another verse to stretch the pick to it; tap the first or last verse to let it go.</li>
+        <li>The bar at the bottom then offers <b>Note</b>, <b>Bookmark</b>, <b>Copy</b>, <b>Compare</b> (the verses in every translation; tap one to switch to it) and <b>Related</b> (other passages on the same things, with their words). ✕ puts the pick away.</li>
+      </ul>
+      <h3>Notes</h3>
+      <ul>
+        <li>Pick verses and tap <b>Note</b>. Choose who sees it: <b>Just me</b>, or one of your groups.</li>
+        <li>Verses with notes are shaded. Pick one and the bar shows how many notes are on it.</li>
+        <li>On group notes you can <b>Reply</b>. On your own notes: <b>Edit</b>, <b>Change verses</b> or <b>Delete</b>.</li>
+        <li>Your Just-me notes are also listed at the bottom of the Bookmarks tab.</li>
+      </ul>
+      <h3>Bookmarks</h3>
+      <ul>
+        <li>The <b>ribbon</b> at the top drops a temporary bookmark where you are; the next tap moves it.</li>
+        <li>To keep one, tap <b>Name</b> on it in the Bookmarks tab, or pick verses and tap <b>Bookmark</b>.</li>
+        <li><b>Edit</b> a saved bookmark to rename it, add notes, change its verses or delete it.</li>
+      </ul>
+      <h3>Search and going to a verse</h3>
+      <ul>
+        <li>Tap the <b>magnifying glass</b> and type words or a phrase; close matches show too.</li>
+        <li>Or type a reference, like <b>jn 3:16</b>, <b>1 cor 13</b> or <b>Ps 23</b>, to go straight there.</li>
+        <li>After jumping somewhere (search, a bookmark, a note), <b>‹ Back to…</b> at the top takes you back to where you were reading.</li>
+      </ul>
+      <h3>Listening</h3>
+      <ul>
+        <li>Once you're signed in and approved, <b>▶ Listen</b> plays the ESV read by David Cochran Heath, chapter after chapter. The verse being read is highlighted.</li>
+        <li>While it plays, <b>tap a verse</b> to play from there. The <b>1×</b> button changes the speed.</li>
+      </ul>
+      <h3>Connection</h3>
+      <ul>
+        <li>Sign in with Google or an email and password. New accounts get 7 days of access while the owner approves them.</li>
+        <li>Create a group or join one with its code or an invite link, and see which chapter everyone is reading.</li>
+      </ul>
+      <h3>Without internet</h3>
+      <ul>
+        <li>The WEB, KJV, ASV and Russian Synodal work offline, and the NASB for the family members the owner has allowed.</li>
+        <li>The ESV, NIV, listening, notes and syncing need a connection; what you do offline is sent once you're back online.</li>
+      </ul>
+    </article>
+  </section>
+
   <!-- Translation menu -->
   <div id="translationMenu" class="popover" role="menu" hidden></div>
   <div id="displayMenu" class="popover" role="menu" hidden></div>
@@ -117,16 +193,17 @@
         <button value="cancel" formnovalidate class="secondary-btn">Cancel</button>
         <button value="save" class="primary-btn">Save</button>
       </div>
+      <button id="bookmarkVerses" value="verses" formnovalidate class="secondary-btn wide">Change verses</button>
       <button id="bookmarkDelete" value="delete" formnovalidate class="danger-btn">Delete bookmark</button>
     </form>
   </dialog>
 
-  <!-- Share a note on a verse with a group -->
+  <!-- Notes on picked verses: just for you, or shared with a group (with replies) -->
   <dialog id="noteDialog">
     <form method="dialog">
       <h2 id="noteRef">Verse</h2>
       <div id="noteList"></div>
-      <label for="noteGroup" id="noteGroupLabel">Group</label>
+      <label for="noteGroup" id="noteGroupLabel">Who sees it</label>
       <select id="noteGroup"></select>
       <label for="noteText" class="spaced" id="noteTextLabel">Your note</label>
       <textarea id="noteText" rows="4" placeholder="Share a thought with your group"></textarea>

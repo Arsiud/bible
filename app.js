@@ -160,8 +160,9 @@ async function copyFromApi(code, onProgress) {
 
 /* ---------- Loading chapters ---------- */
 
-async function getVerses() {
-  const { translation, book, chapter } = state;
+const getVerses = () => versesFor(state.translation, state.book, state.chapter);
+
+async function versesFor(translation, book, chapter) {
   if (translation === "KJV") return state.books[book].chapters[chapter];
   if (offline[translation]) return offline[translation].books[book].chapters[chapter];
   if (BUNDLED[translation]) return (await loadBundled(translation))[book].chapters[chapter];
@@ -316,14 +317,15 @@ async function render({ restoreVerse = state.verse } = {}) {
 
   let html;
   try {
-    const verses = await getVerses();
+    const [verses, related] = await Promise.all([getVerses(), relatedFor(state.book)]);
     if (token !== renderToken) return;   // a newer chapter was requested meanwhile
     html = `<h2>${escapeHTML(label)}</h2>` + listenButton() +
       verses.map((text, i) => !text ? "" :
         `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}</p>`
       ).join("") +
       (state.translation === "ESV" ? `<p class="copyright">${ESV_COPYRIGHT}</p>` : "") +
-      (isApiTranslation(state.translation) ? copyrightNotice(API_TRANSLATIONS[state.translation]) : "");
+      (isApiTranslation(state.translation) ? copyrightNotice(API_TRANSLATIONS[state.translation]) : "") +
+      relatedSection(related?.[state.chapter]);
   } catch (error) {
     if (token !== renderToken) return;
     html = `<div class="empty"><h2>Not available</h2><p>${escapeHTML(error.message)}</p></div>`;
@@ -432,14 +434,18 @@ els.bibleView.addEventListener("touchcancel", swipeEnd);   // a turn already dra
 els.chapter.addEventListener("click", (event) => {
   if (swipe.justSwiped) return void (swipe.justSwiped = false);
   if (event.target.closest("[data-listen]")) return toggleListening();
+  const xref = event.target.closest("[data-xref]");
+  if (xref) return goToRelated(xref);
   const verse = event.target.closest(".verse");
   if (verse) {
-    if (heldVerse) return void (heldVerse = false);   // a long press already opened notes
-    if (followingHere()) return void jumpToVerse(Number(verse.dataset.verse));
-    const hints = store.get("holdHints", 0);   // tapping used to open notes; remind a few times
+    if (heldVerse) return void (heldVerse = false);   // a long press already picked it
+    const number = Number(verse.dataset.verse);
+    if (selection) return stretchSelection(number);
+    if (followingHere()) return void jumpToVerse(number);
+    const hints = store.get("pickHints", 0);   // remind a few times how to pick verses
     if (hints < 3) {
-      store.set("holdHints", hints + 1);
-      toast("To write a note on a verse, hold it.");
+      store.set("pickHints", hints + 1);
+      toast("Hold a verse to pick it for a note, bookmark or copy.");
     }
     return;
   }
@@ -474,9 +480,25 @@ const audioUrl = (book, chapter) => {
   return `https://audio.esv.org/hw/mq/${bbccc}001-${bbccc}999.mp3`;
 };
 
+// Playback speed, kept on this device; a new chapter keeps it.
+const SPEEDS = [1, 1.25, 1.5, 1.75, 2, 0.75];
+let speed = store.get("audioSpeed", 1);
+function applySpeed() {
+  audio.defaultPlaybackRate = audio.playbackRate = speed;
+  $("speedBtn").textContent = `${speed}×`;
+}
+$("speedBtn").addEventListener("click", () => {
+  speed = SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length];
+  store.set("audioSpeed", speed);
+  applySpeed();
+});
+audio.addEventListener("loadedmetadata", applySpeed);   // some browsers reset the speed for each new recording
+applySpeed();
+
 function listen(book, chapter) {
   Object.assign(listening, { book, chapter });
   audio.src = audioUrl(book, chapter);
+  applySpeed();
   $("playerTitle").textContent = `${state.books[book].name} ${chapter + 1}`;
   $("player").hidden = false;
   document.body.classList.add("listening");
@@ -552,7 +574,7 @@ async function followAlong() {
 }
 audio.addEventListener("timeupdate", followAlong);
 
-// Holding a verse opens notes. While listening, tapping a verse plays from there.
+// Holding a verse picks it (see Picking verses). While listening, tapping a verse plays from there.
 async function jumpToVerse(verse) {
   const starts = (await verseTimings())?.[listening.book]?.[listening.chapter] ?? [];
   const start = starts.slice(verse - 1).find((t) => t !== null);   // a verse the ESV omits: the next one
@@ -562,19 +584,20 @@ async function jumpToVerse(verse) {
   followAlong();
 }
 
-let heldVerse = false, holdTimer = null, holdStart = null;
+let heldVerse = false, holdTimer = null, holdStart = null;   // holdStart: [x, y, the finger or pointer holding]
 els.chapter.addEventListener("pointerdown", (event) => {
   const verse = event.target.closest(".verse");
   heldVerse = false;
   if (!verse) return;
-  holdStart = [event.clientX, event.clientY];
+  holdStart = [event.clientX, event.clientY, event.pointerId];
   holdTimer = setTimeout(() => {
     heldVerse = true;
-    emit("versetap", { verse: Number(verse.dataset.verse) });
+    const number = Number(verse.dataset.verse);
+    pick(number, number);   // a new pick (while changing a note's verses, it starts over there)
   }, 500);
 });
 els.chapter.addEventListener("pointermove", (event) => {
-  if (holdTimer && Math.hypot(event.clientX - holdStart[0], event.clientY - holdStart[1]) > 10) clearTimeout(holdTimer);
+  if (holdTimer && event.pointerId === holdStart[2] && Math.hypot(event.clientX - holdStart[0], event.clientY - holdStart[1]) > 10) clearTimeout(holdTimer);
 });
 for (const type of ["pointerup", "pointercancel"]) els.chapter.addEventListener(type, () => clearTimeout(holdTimer));
 els.chapter.addEventListener("contextmenu", (event) => { if (event.target.closest(".verse")) event.preventDefault(); });
@@ -589,6 +612,277 @@ if ("mediaSession" in navigator) {
   navigator.mediaSession.setActionHandler("nexttrack", () => listenStep(1));
   navigator.mediaSession.setActionHandler("previoustrack", () => listenStep(-1));
 }
+
+/* ---------- Picking verses ---------- */
+
+// Hold a verse to pick it, then tap others to stretch the pick to them; tapping an end verse lets it go.
+// The bar at the bottom acts on the pick: a note, a bookmark, copy, or compare translations.
+// Changing the verses of a note or bookmark is the same pick, started from its verses, with Save and Cancel.
+let selection = null;   // { book, chapter, start, end, changing?: { label, save(start, end) } }
+const bar = $("verseBar");
+// "John 3:16" or "John 3:16–18", always with the verse (unlike reference(), which leaves out verse 1).
+const verseRef = (b, name = state.books[b.book]?.name ?? "?") =>
+  `${name} ${b.chapter + 1}:${b.verse}` + (b.verseEnd > b.verse ? `–${b.verseEnd}` : "");
+const pickRef = (s, name) => verseRef({ book: s.book, chapter: s.chapter, verse: s.start, verseEnd: s.end }, name);
+
+function pick(start, end, changing = selection?.changing) {
+  selection = { book: state.book, chapter: state.chapter, start, end, changing };
+  showSelection();
+}
+
+function stretchSelection(verse) {
+  let { start, end } = selection;
+  if (verse < start) start = verse;
+  else if (verse > end) end = verse;
+  else if (start === end) return clearSelection();   // the only verse: let it go
+  else if (verse === start) start++;
+  else end = verse === end ? end - 1 : verse;        // the last verse, or one inside: end there
+  pick(start, end);
+}
+
+function clearSelection() {
+  selection = null;
+  showSelection();
+}
+
+function showSelection() {
+  els.chapter.querySelectorAll(".verse.picked").forEach((v) => v.classList.remove("picked"));
+  document.body.classList.toggle("picking", !!selection);
+  bar.hidden = !selection;
+  if (!selection) return;
+  for (let v = selection.start; v <= selection.end; v++) $(`v${v}`)?.classList.add("picked");
+  const ref = escapeHTML(pickRef(selection, bookName(selection.book)));
+  if (selection.changing) {
+    bar.innerHTML = `<div class="bar-ref">${escapeHTML(selection.changing.label)}: ${ref}</div>` +
+      `<div class="bar-actions"><button data-act="cancel">Cancel</button><button data-act="save" class="bar-main">Save verses</button></div>`;
+    return;
+  }
+  const notes = window.bible.noteCount?.(selection) ?? 0;
+  bar.innerHTML = `<div class="bar-top"><div class="bar-ref">${ref}</div>` +
+    `<button data-act="close" class="bar-close" aria-label="Done">✕</button></div><div class="bar-actions">` +
+    `<button data-act="note">${notes ? `Notes (${notes})` : "Note"}</button><button data-act="bookmark">Bookmark</button>` +
+    `<button data-act="copy">Copy</button><button data-act="compare">Compare</button><button data-act="related">Related</button></div>`;
+}
+
+bar.addEventListener("click", (event) => {
+  const act = event.target.closest("[data-act]")?.dataset.act;
+  const s = selection;
+  if (!act || !s) return;
+  if (act === "copy") return copyVerses(s);
+  clearSelection();
+  if (act === "save") s.changing.save(s.start, s.end);
+  else if (act === "note") emit("notes", { book: s.book, chapter: s.chapter, verse: s.start, verseEnd: s.end });
+  else if (act === "bookmark") openBookmarkDialog("new", s);
+  else if (act === "compare") openCompare(s);
+  else if (act === "related") openRelated(s);
+});
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && selection && !document.querySelector("dialog[open]")) clearSelection(); });
+// A new chapter ends the pick (and a change of verses, which stays within its chapter).
+window.addEventListener("bible:rendered", () => {
+  if (selection && (selection.book !== state.book || selection.chapter !== state.chapter)) clearSelection();
+  else showSelection();
+});
+
+// Change which verses a note or bookmark is on: back in its chapter with its verses picked.
+function changeVerses(item, label, save) {
+  showTab("bibleView");
+  const begin = () => {
+    pick(item.verse, item.verseEnd ?? item.verse, { label, save });
+    $(`v${item.verse}`)?.scrollIntoView({ block: "center" });
+  };
+  if (item.book === state.book && item.chapter === state.chapter) return begin();
+  addEventListener("bible:rendered", begin, { once: true });
+  goTo(item.book, item.chapter, item.verse);
+}
+
+// The words of a verse, without its number.
+const verseText = (el) => [...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join("");
+
+function copyVerses(s) {
+  const several = s.end > s.start;
+  const parts = [];
+  for (let v = s.start; v <= s.end; v++) {
+    const el = $(`v${v}`);
+    if (el) parts.push((several ? `${v} ` : "") + verseText(el));
+  }
+  const text = `${parts.join(" ")}\n— ${pickRef(s, bookName(s.book))} (${state.translation})`;
+  const done = () => { toast(`Copied ${pickRef(s, bookName(s.book))}`); clearSelection(); };
+  const fallback = () => copyTheOldWay(text) ? done() : toast("Couldn't copy on this device.");
+  // The clipboard call has to start right away, within the tap.
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, fallback);
+  else fallback();
+}
+function copyTheOldWay(text) {
+  const area = Object.assign(document.createElement("textarea"), { value: text, readOnly: true });
+  area.style.cssText = "position:fixed;opacity:0";
+  document.body.append(area);
+  area.select();
+  const ok = document.execCommand("copy");
+  area.remove();
+  return ok;
+}
+
+/* ---------- Compare translations ---------- */
+
+// The picked verses in every translation this person can read, the one on screen first.
+// Tapping one switches to it. Licensed texts show their notices, as on their own pages.
+let compareToken = 0;
+const canRead = (code) => code in BUNDLED || code === "KJV" || !!offline[code] ||
+  (code === "ESV" ? canListen() : !!state.sharedNivKey);   // NIV and NASB share the API.Bible key
+
+function openCompare(s) {
+  const token = ++compareToken;
+  const codes = [state.translation, ...Object.keys(TRANSLATIONS).filter((c) => c !== state.translation)].filter(canRead);
+  const missing = Object.keys(TRANSLATIONS).filter((c) => !canRead(c));
+  $("compareTitle").textContent = pickRef(s);
+  $("compareList").innerHTML = codes.map((code) =>
+    `<button class="result compare-row" data-translation="${code}" data-verse="${s.start}">` +
+    `<div class="ref">${code} <span class="compare-name">${escapeHTML(TRANSLATIONS[code])}</span></div>` +
+    `<div class="snippet" id="compare-${code}"><span class="hint">Loading…</span></div></button>`
+  ).join("") +
+    (missing.length ? `<p class="hint compare-missing">Sign in on the Connection tab (once approved) to compare with the ${missing.join(", ")}.</p>` : "") +
+    `<div id="compareNotices"></div>`;
+  $("compare").hidden = false;
+  $("compare").scrollTop = 0;
+  const notices = [];
+  codes.forEach(async (code) => {
+    let html;
+    try {
+      const verses = await versesFor(code, s.book, s.chapter);
+      const parts = [];
+      for (let v = s.start; v <= s.end; v++) {
+        if (verses[v - 1]) parts.push((s.end > s.start ? `<sup>${v}</sup>` : "") + escapeHTML(verses[v - 1]));
+      }
+      html = parts.join(" ") || `<span class="hint">Not in this translation</span>`;
+      if (code === "ESV") notices.push(`<p class="copyright">${ESV_COPYRIGHT}</p>`);
+      if (isApiTranslation(code)) notices.push(copyrightNotice(API_TRANSLATIONS[code]));
+    } catch (error) {
+      html = `<span class="hint">${escapeHTML(error.message)}</span>`;
+    }
+    if (token !== compareToken) return;
+    $(`compare-${code}`).innerHTML = html;
+    $("compareNotices").innerHTML = notices.join("");
+  });
+}
+const closeCompare = () => { compareToken++; $("compare").hidden = true; };
+$("compareClose").addEventListener("click", closeCompare);
+$("compareList").addEventListener("click", (event) => {
+  const row = event.target.closest("[data-translation]");
+  if (!row || event.target.closest("a")) return;
+  closeCompare();
+  setTranslation(row.dataset.translation, Number(row.dataset.verse));
+});
+
+/* ---------- Related passages ---------- */
+
+// OpenBible.info's cross references (CC BY), one small file per book (tools/cross_references.py),
+// kept for offline use by sw.js. They use English verse numbers, like every translation in the app.
+// Under each chapter: the strongest few for each verse. Related, on picked verses, shows more, with their words.
+const relatedFiles = new Map();
+function relatedFor(book) {
+  if (!relatedFiles.has(book)) {
+    relatedFiles.set(book, fetch(`xrefs/${book}.json`).then((r) => r.json()).catch(() => { relatedFiles.delete(book); return null; }));
+  }
+  return relatedFiles.get(book);
+}
+const relatedRef = ([book, chapter, verse, verseEnd]) => verseRef({ book, chapter, verse, verseEnd }, bookName(book));
+const RELATED_CREDIT = `Related passages: <a href="https://www.openbible.info/labs/cross-references/" target="_blank" rel="noopener">OpenBible.info</a> (CC BY)`;
+
+// { "16": [strong, [book, chapter, verse, verseEnd?], ...] } -> a folded list under the chapter
+function relatedSection(links) {
+  const rows = Object.entries(links ?? {}).map(([verse, [strong, ...to]]) => [Number(verse), to.slice(0, strong)])
+    .filter(([, to]) => to.length).sort((a, b) => a[0] - b[0]);
+  const count = rows.reduce((n, [, to]) => n + to.length, 0);
+  if (!count) return "";
+  return `<details class="related"${store.get("relatedOpen", false) ? " open" : ""}><summary>Related passages (${count})</summary>` +
+    rows.map(([verse, to]) => `<div class="related-row"><span class="related-verse">v. ${verse}</span> ` +
+      to.map((t) => `<button data-xref="${t.join(",")}">${escapeHTML(relatedRef(t))}</button>`).join(" · ") + `</div>`).join("") +
+    `<p class="related-credit">${RELATED_CREDIT}</p></details>`;
+}
+// Open or folded stays that way for the next chapters.
+els.chapter.addEventListener("toggle", (event) => {
+  if (event.target.matches?.("details.related")) store.set("relatedOpen", event.target.open);
+}, true);
+
+function goToRelated(button) {
+  const [book, chapter, verse, verseEnd] = button.dataset.xref.split(",").map(Number);
+  jumpTo(book, chapter, verse, verseEnd || verse);
+}
+
+// The picked verses' related passages, each with its words (in a translation that's on the device:
+// this one, or else the WEB, so a list of passages doesn't send a stream of requests to the ESV or API.Bible).
+let relatedToken = 0;
+async function openRelated(s) {
+  const token = ++relatedToken;
+  const file = await relatedFor(s.book);
+  const local = state.translation === "KJV" || state.translation in BUNDLED || offline[state.translation];
+  const code = local ? state.translation : "WEB";
+  const groups = [];
+  for (let v = s.start; v <= s.end; v++) {
+    const entry = file?.[s.chapter]?.[v];
+    if (entry) groups.push([v, entry.slice(1)]);
+  }
+  $("relatedTitle").textContent = `Related to ${pickRef(s, bookName(s.book))}`;
+  $("relatedList").innerHTML = !file ? `<p class="list-empty">Related passages need an internet connection the first time.</p>`
+    : !groups.length ? `<p class="list-empty">No related passages are listed for ${escapeHTML(pickRef(s, bookName(s.book)))}.</p>`
+    : groups.map(([v, to]) => (s.end > s.start ? `<div class="results-label">Verse ${v}</div>` : "") +
+      to.map((t) => `<button class="result" data-xref="${t.join(",")}"><div class="ref">${escapeHTML(relatedRef(t))}</div>` +
+        `<div class="snippet"></div></button>`).join("")).join("") +
+      (code !== state.translation ? `<p class="hint related-note">The words are shown in the WEB.</p>` : "") +
+      `<p class="hint related-note">${RELATED_CREDIT}</p>`;
+  $("related").hidden = false;
+  $("related").scrollTop = 0;
+  for (const button of $("relatedList").querySelectorAll("[data-xref]")) {
+    const [book, chapter, verse, verseEnd] = button.dataset.xref.split(",").map(Number);
+    versesFor(code, book, chapter).then((verses) => {
+      if (token !== relatedToken) return;
+      button.querySelector(".snippet").textContent = verses.slice(verse - 1, verseEnd || verse).filter(Boolean).join(" ");
+    }).catch(() => {});
+  }
+}
+$("relatedClose").addEventListener("click", () => { $("related").hidden = true; });
+$("relatedList").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-xref]");
+  if (!button) return;
+  $("related").hidden = true;
+  goToRelated(button);
+});
+
+/* ---------- Back to where I was ---------- */
+
+// Jumping somewhere (a search result, a reference, a bookmark, a note) offers a way back to where
+// you were reading. A string of jumps still leads back to where the first one started.
+let backTo = null;   // { book, chapter, verse }
+let flash = null;    // { start, end }: verses to light up briefly once the chapter shows
+
+function jumpTo(book, chapter, verse = 1, verseEnd = verse) {
+  saveVisibleVerse();
+  if (book !== state.book || chapter !== state.chapter) backTo ??= { book: state.book, chapter: state.chapter, verse: state.verse };
+  if (backTo && backTo.book === book && backTo.chapter === chapter) backTo = null;   // back where it started anyway
+  flash = { start: verse, end: verseEnd };
+  showTab("bibleView");
+  goTo(book, chapter, verse);
+  showBack();
+}
+
+function showBack() {
+  $("backBar").hidden = !backTo;
+  document.body.classList.toggle("has-back", !!backTo);
+  if (backTo) $("backBtn").textContent = `‹ Back to ${chapterLabel(backTo.book, backTo.chapter)}` + (backTo.verse > 1 ? `:${backTo.verse}` : "");
+}
+$("backBtn").addEventListener("click", () => {
+  const to = backTo;
+  backTo = null;
+  showBack();
+  goTo(to.book, to.chapter, to.verse);
+});
+$("backClose").addEventListener("click", () => { backTo = null; showBack(); });
+
+window.addEventListener("bible:rendered", () => {
+  if (!flash) return;
+  for (let v = flash.start; v <= flash.end; v++) $(`v${v}`)?.classList.add("flash");
+  flash = null;
+});
 
 /* ---------- Remembering the reading position ---------- */
 
@@ -638,7 +932,8 @@ function showBooks() {
   ).join("");
   els.drawerBody.innerHTML =
     `<div class="section-label">Old Testament</div>${rows(0, 39)}` +
-    `<div class="section-label">New Testament</div>${rows(39, 66)}`;
+    `<div class="section-label">New Testament</div>${rows(39, 66)}` +
+    `<button class="help-link" data-help>How to use this app</button>`;
   els.drawerBody.querySelector(".current")?.scrollIntoView({ block: "center" });
 }
 
@@ -655,12 +950,14 @@ function showChapters(book) {
 els.drawerBody.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
+  if (button.dataset.help !== undefined) { closeDrawer(); $("help").hidden = false; $("help").scrollTop = 0; return; }
   const book = Number(button.dataset.book);
   if (button.dataset.chapter === undefined) return showChapters(book);
   goTo(book, Number(button.dataset.chapter));
   closeDrawer();
 });
 $("menuBtn").addEventListener("click", openDrawer);
+$("helpClose").addEventListener("click", () => { $("help").hidden = true; });
 $("drawerClose").addEventListener("click", closeDrawer);
 els.drawerBack.addEventListener("click", showBooks);
 els.scrim.addEventListener("click", closeDrawer);
@@ -698,11 +995,15 @@ els.translationMenu.addEventListener("click", (event) => {
     return;
   }
   saveVisibleVerse();
-  state.translation = button.dataset.translation;
-  store.set("translation", state.translation);
-  render();
-  if (!$("search").hidden) { $("searchInput").placeholder = `Search the ${state.translation}`; runSearch($("searchInput").value); }
+  setTranslation(button.dataset.translation);
 });
+
+function setTranslation(code, restoreVerse = state.verse) {
+  state.translation = code;
+  store.set("translation", code);
+  render({ restoreVerse });
+  if (!$("search").hidden) { $("searchInput").placeholder = `Search the ${code}`; runSearch($("searchInput").value); }
+}
 els.settings.addEventListener("close", () => {
   const key = els.esvKey.value.trim();
   if (key === state.esvKey) return;
@@ -756,7 +1057,15 @@ async function runSearch(query) {
   const token = ++search.token;
   Object.assign(search, { query: query.trim(), translation: state.translation, results: [], shown: 0, esvPage: 0, esvTotal: 0, nivOffset: 0, nivTotal: 0 });
   $("searchResults").innerHTML = "";
-  if (search.query.length < 2) { $("searchStatus").textContent = ""; return; }
+  $("searchStatus").textContent = "";
+  if (search.query.length < 2) return;
+  // "jn 3:16" or "1 cor 13" goes there; a book's name alone ("Job") offers it above the word matches.
+  const ref = parseReference(search.query);
+  if (ref) {
+    $("searchResults").innerHTML = `<button class="result go-ref" data-go="${ref.book},${ref.chapter},${ref.verse},${ref.verseEnd}">` +
+      `<div class="ref">Go to ${escapeHTML(refLabel(ref))}</div></button>`;
+    if (ref.typedChapter) return;
+  }
   search.exact = searchPattern(search.query);
   if (!search.exact) return;
 
@@ -884,6 +1193,8 @@ $("searchForm").addEventListener("submit", (event) => {
   event.preventDefault();
   clearTimeout(searchTimer);
   $("searchInput").blur();   // hide the phone keyboard so the results show
+  const ref = parseReference($("searchInput").value);
+  if (ref?.typedChapter) { closeSearch(); return jumpTo(ref.book, ref.chapter, ref.verse, ref.verseEnd); }
   if ($("searchInput").value.trim() !== search.query) runSearch($("searchInput").value);
 });
 $("searchBtn").addEventListener("click", openSearch);
@@ -897,20 +1208,74 @@ $("searchResults").addEventListener("click", (event) => {
   }
   const result = event.target.closest("[data-go]");
   if (!result) return;
-  const [book, chapter, verse] = result.dataset.go.split(",").map(Number);
+  const [book, chapter, verse, verseEnd] = result.dataset.go.split(",").map(Number);
   closeSearch();
-  showTab("bibleView");
-  goTo(book, chapter, verse);
-  flashVerse = verse;
+  jumpTo(book, chapter, verse, verseEnd || verse);
 });
 
-// Briefly light up the verse you jumped to from search.
-let flashVerse = null;
-window.addEventListener("bible:rendered", () => {
-  if (!flashVerse) return;
-  $(`v${flashVerse}`)?.classList.add("flash");
-  flashVerse = null;
-});
+/* ---------- Going to a reference ---------- */
+
+// Common short forms. Anything else works by its start ("revel", "philip"); a number in front picks
+// 1, 2 or 3 John and the like. Russian names and short forms work too ("Ин 3:16", "1 Кор 13").
+const BOOK_ALIASES = {
+  genesis: "gen gn ge", exodus: "ex exo exod", leviticus: "lev lv le", numbers: "num nm nu nb",
+  deuteronomy: "deut dt de deu", joshua: "josh jos jsh", judges: "judg jdg jg jdgs", ruth: "ru rth rt",
+  samuel: "sam sa sm", kings: "kgs ki kin", chronicles: "chr ch chron", ezra: "ezr", nehemiah: "neh ne",
+  esther: "esth est es", job: "jb", psalms: "ps psa psm pss psalm", proverbs: "prov pr prv pro",
+  ecclesiastes: "eccl ec ecc qoh", songofsolomon: "song sos so sng cant songofsongs songs", isaiah: "isa is",
+  jeremiah: "jer je jr", lamentations: "lam la", ezekiel: "ezek eze ezk", daniel: "dan da dn", hosea: "hos ho",
+  joel: "jl", amos: "am", obadiah: "obad ob", jonah: "jon jnh", micah: "mic mc", nahum: "nah na",
+  habakkuk: "hab hb", zephaniah: "zeph zep zp", haggai: "hag hg", zechariah: "zech zec zc", malachi: "mal ml",
+  matthew: "matt mt mat", mark: "mk mr mrk", luke: "lk lu luk", john: "jn jhn joh", acts: "ac act",
+  romans: "rom ro rm", corinthians: "cor co", galatians: "gal ga", ephesians: "eph ephes",
+  philippians: "phil php pp", colossians: "col", thessalonians: "thess th thes", timothy: "tim ti tm",
+  titus: "tit", philemon: "philem phm phlm", hebrews: "heb", james: "jas jm", peter: "pet pe pt",
+  jude: "jd", revelation: "rev re rv revelations",
+  бытие: "быт", исход: "исх", левит: "лев", числа: "чис", второзаконие: "втор", иисуснавин: "нав",
+  судьи: "суд", руфь: "руф", царств: "цар", паралипоменон: "пар", ездра: "езд", неемия: "неем",
+  есфирь: "есф", псалтирь: "пс псалом псалмы", притчи: "притч", екклесиаст: "еккл", песньпесней: "песн",
+  исаия: "ис", иеремия: "иер", плачиеремии: "плач", иезекииль: "иез", даниил: "дан", осия: "ос",
+  иоиль: "иоил", авдий: "авд", иона: "ион", михей: "мих", аввакум: "авв", софония: "соф", аггей: "агг",
+  захария: "зах", малахия: "мал", матфея: "мф мат", марка: "мк мар", луки: "лк лук", иоанна: "ин иоан",
+  деяния: "деян", римлянам: "рим", коринфянам: "кор", галатам: "гал", ефесянам: "еф",
+  филиппийцам: "флп фил", колоссянам: "кол", фессалоникийцам: "фес", тимофею: "тим", титу: "тит",
+  филимону: "флм", евреям: "евр", иакова: "иак", петра: "пет", иуды: "иуд", откровение: "откр отк",
+};
+const ALIAS = new Map(Object.entries(BOOK_ALIASES).flatMap(([base, short]) => [[base, base], ...short.split(" ").map((s) => [s, base])]));
+let bookKeys = null;   // [{ book, num, base }] in English and Russian, made once the books have loaded
+
+function splitName(name) {
+  const m = name.toLowerCase().replace(/^от /, "").match(/^(?:(\d) )?(.+)$/);
+  return { num: Number(m[1] ?? 0), base: m[2].replace(/\s+/g, "") };
+}
+
+// -> { book, chapter, verse, verseEnd, typedChapter } or null
+function parseReference(text) {
+  const m = text.trim().toLowerCase().replace(/ё/g, "е").replace(/\./g, " ")
+    .match(/^(?:([123])\s*|(i{1,3}|first|second|third)\s+)?(\p{L}[\p{L}\s]*?)\s*(?:(\d+)(?:\s*[:,]\s*(\d+)(?:\s*[-–—]\s*(\d+))?)?)?$/u);
+  if (!m || !state.books.length) return null;
+  bookKeys ??= state.books.flatMap((b, book) => [{ book, ...splitName(b.name) }, { book, ...splitName(RUSSIAN_BOOKS[book]) }]);
+  const num = Number(m[1] ?? { i: 1, ii: 2, iii: 3, first: 1, second: 2, third: 3 }[m[2]] ?? 0);
+  const letters = m[3].replace(/\s+/g, "");
+  const base = ALIAS.get(letters);
+  // A short form or full name; otherwise the first book whose name starts that way (3 letters at least).
+  const matches = base ? bookKeys.filter((k) => k.base === base)
+    : letters.length >= 3 ? bookKeys.filter((k) => k.base.startsWith(letters)) : [];
+  const match = matches.find((k) => k.num === num) ?? (num === 0 ? matches.find((k) => k.num === 1) : undefined);
+  if (!match) return null;
+  const { book } = match;
+  // A book alone needs its name (or 4 letters of it): "is" or "gen" on their own are more likely words.
+  if (m[4] === undefined && letters !== match.base && (ALIAS.has(letters) || letters.length < 4)) return null;
+  let chapter = Number(m[4] ?? 1), verse = Number(m[5] ?? 1), verseEnd = Number(m[6] ?? verse);
+  const chapters = state.books[book].chapters;
+  if (chapters.length === 1 && m[4] !== undefined && m[5] === undefined) [chapter, verse, verseEnd] = [1, chapter, chapter];   // "Jude 5"
+  if (chapter < 1 || chapter > chapters.length || verse < 1 || verseEnd < verse) return null;
+  if (verse > chapters[chapter - 1].length + 1) return null;   // (+1: a few chapters have a verse more in some translations)
+  return { book, chapter: chapter - 1, verse, verseEnd, typedChapter: m[4] !== undefined };
+}
+const refLabel = (r) => r.verse > 1 || r.verseEnd > r.verse || r.typedChapter && state.books[r.book].chapters.length === 1
+  ? verseRef({ book: r.book, chapter: r.chapter, verse: r.verse, verseEnd: r.verseEnd }, bookName(r.book))
+  : chapterLabel(r.book, r.chapter);
 
 /* ---------- Display mode ---------- */
 
@@ -957,11 +1322,39 @@ function preparePhoto(file) {
   });
 }
 
+// Text size and line spacing for the Bible text, kept on this device.
+const TEXT_SIZES = [0.8, 0.9, 1, 1.15, 1.3, 1.5, 1.75, 2];
+const SPACINGS = [["Tight", 1.45], ["Normal", 1.7], ["Roomy", 2], ["Extra roomy", 2.35]];
+const textPrefs = { size: store.get("textSize", 2), spacing: store.get("spacing", 1) };
+
+function applyText() {
+  const root = document.documentElement.style;
+  root.setProperty("--text-scale", TEXT_SIZES[textPrefs.size]);
+  root.setProperty("--leading", SPACINGS[textPrefs.spacing][1]);
+  if ($("textSize")) {
+    $("textSize").textContent = `${Math.round(TEXT_SIZES[textPrefs.size] * 100)}%`;
+    $("textSpacing").textContent = SPACINGS[textPrefs.spacing][0];
+  }
+}
+
+function changeText(what, step) {
+  const max = (what === "size" ? TEXT_SIZES : SPACINGS).length - 1;
+  textPrefs[what] = Math.min(max, Math.max(0, textPrefs[what] + step));
+  store.set(what === "size" ? "textSize" : "spacing", textPrefs[what]);
+  applyText();
+  $(`v${state.verse}`)?.scrollIntoView({ block: "start" });   // stay at the same verse
+}
+
 function toggleDisplayMenu(show = $("displayMenu").hidden) {
   if (show) {
     $("displayMenu").innerHTML = Object.entries(DISPLAY_MODES).map(([mode, label]) =>
       `<button data-display="${mode}" role="menuitem">${label}<span class="check">${mode === display.mode && (mode !== "photo" || display.photo) ? "✓" : ""}</span></button>`
-    ).join("") + (display.photo ? `<hr><button data-display="change" role="menuitem">Change photo…</button>` : "");
+    ).join("") + (display.photo ? `<hr><button data-display="change" role="menuitem">Change photo…</button>` : "") +
+      `<hr><div class="text-row"><span>Text size</span><button data-text="size" data-step="-1" aria-label="Smaller text">A−</button>` +
+      `<span id="textSize" class="text-value"></span><button data-text="size" data-step="1" aria-label="Larger text">A+</button></div>` +
+      `<div class="text-row"><span>Spacing</span><button data-text="spacing" data-step="-1" aria-label="Less space between lines">−</button>` +
+      `<span id="textSpacing" class="text-value"></span><button data-text="spacing" data-step="1" aria-label="More space between lines">+</button></div>`;
+    applyText();
   }
   $("displayMenu").hidden = !show;
 }
@@ -975,6 +1368,8 @@ document.addEventListener("click", (event) => {
   if (!$("displayMenu").hidden && !$("displayMenu").contains(event.target)) toggleDisplayMenu(false);
 });
 $("displayMenu").addEventListener("click", (event) => {
+  const textButton = event.target.closest("[data-text]");
+  if (textButton) return changeText(textButton.dataset.text, Number(textButton.dataset.step));   // the menu stays open
   const choice = event.target.closest("[data-display]")?.dataset.display;
   if (!choice) return;
   toggleDisplayMenu(false);
@@ -997,10 +1392,13 @@ $("photoInput").addEventListener("change", async () => {
   } catch (error) { toast(error.message); }
 });
 applyDisplay();
+applyText();
 
 /* ---------- Bookmarks ---------- */
 
-const reference = (b) => `${state.books[b.book]?.name ?? "?"} ${b.chapter + 1}` + (b.verse > 1 ? `:${b.verse}` : "");
+// "John 3", "John 3:16", or "John 3:16–18" for a few verses (verseEnd).
+const reference = (b) => `${state.books[b.book]?.name ?? "?"} ${b.chapter + 1}` +
+  (b.verseEnd > b.verse ? `:${b.verse}–${b.verseEnd}` : b.verse > 1 ? `:${b.verse}` : "");
 const isHere = (b) => b && b.book === state.book && b.chapter === state.chapter;
 
 function updateBookmarkBtn() {
@@ -1058,17 +1456,22 @@ function renderBookmarks() {
       : `<p class="list-empty">Name your temporary bookmark to save it here, with notes.</p>`);
 }
 
-let editing = null;   // "temp" or a saved bookmark id
+let editing = null;      // "temp", a saved bookmark's id, or "new" (verses picked in the text)
+let newBookmark = null;  // { book, chapter, verse, verseEnd? } while saving picked verses
 
-function openBookmarkDialog(target) {
-  const b = target === "temp" ? state.tempBookmark : state.bookmarks.find((x) => x.id === target);
+function openBookmarkDialog(target, picked) {
+  newBookmark = picked ? { book: picked.book, chapter: picked.chapter, verse: picked.start,
+    ...(picked.end > picked.start ? { verseEnd: picked.end } : {}) } : null;
+  const b = newBookmark ?? (target === "temp" ? state.tempBookmark : state.bookmarks.find((x) => x.id === target));
   if (!b) return;
   editing = target;
-  els.bookmarkDialogTitle.textContent = target === "temp" ? "Save bookmark" : "Edit bookmark";
-  els.bookmarkRef.textContent = reference(b);
+  const saved = target !== "temp" && target !== "new";
+  els.bookmarkDialogTitle.textContent = saved ? "Edit bookmark" : "Save bookmark";
+  els.bookmarkRef.textContent = newBookmark ? verseRef(b) : reference(b);
   els.bookmarkName.value = b.name ?? "";
   els.bookmarkNotes.value = b.notes ?? "";
-  els.bookmarkDelete.hidden = target === "temp";
+  els.bookmarkDelete.hidden = !saved;
+  $("bookmarkVerses").hidden = !saved;
   els.bookmarkDialog.returnValue = "";
   els.bookmarkDialog.showModal();
 }
@@ -1077,16 +1480,27 @@ els.bookmarkDialog.addEventListener("close", () => {
   const action = els.bookmarkDialog.returnValue;
   const name = els.bookmarkName.value.trim();
   const notes = els.bookmarkNotes.value.trim();
+  const saved = state.bookmarks.find((x) => x.id === editing);
   if (action === "save" && name) {
-    if (editing === "temp" && state.tempBookmark) {
+    if (editing === "new") {
+      state.bookmarks.unshift({ id: String(Date.now()), name, notes, ...newBookmark, created: Date.now() });
+    } else if (editing === "temp" && state.tempBookmark) {
       const { book, chapter, verse } = state.tempBookmark;
       state.bookmarks.unshift({ id: String(Date.now()), name, notes, book, chapter, verse, created: Date.now() });
       state.tempBookmark = null;   // promoted, so the temporary slot is free again
     } else {
-      Object.assign(state.bookmarks.find((x) => x.id === editing) ?? {}, { name, notes });
+      Object.assign(saved ?? {}, { name, notes });
     }
   } else if (action === "delete") {
     state.bookmarks = state.bookmarks.filter((x) => x.id !== editing);
+  } else if (action === "verses" && saved) {
+    if (name) Object.assign(saved, { name, notes });   // keep anything typed before tapping Change verses
+    return changeVerses(saved, `Verses for “${saved.name}”`, (start, end) => {
+      saved.verse = start;
+      if (end > start) saved.verseEnd = end; else delete saved.verseEnd;
+      saveBookmarks();
+      toast(`“${saved.name}” is now on ${verseRef(saved)}`);
+    });
   } else return;
   saveBookmarks();
 });
@@ -1098,9 +1512,7 @@ els.bookmarks.addEventListener("click", (event) => {
   if (!open) return;
   const id = open.dataset.open;
   const b = id === "temp" ? state.tempBookmark : state.bookmarks.find((x) => x.id === id);
-  if (!b) return;
-  goTo(b.book, b.chapter, b.verse);
-  document.querySelector('.tab[data-view="bibleView"]').click();
+  if (b) jumpTo(b.book, b.chapter, b.verse, b.verseEnd ?? b.verse);
 });
 
 /* ---------- Hooks for connect.js ---------- */
@@ -1108,9 +1520,10 @@ els.bookmarks.addEventListener("click", (event) => {
 function showTab(view) { document.querySelector(`.tab[data-view="${view}"]`).click(); }
 
 window.bible = {
-  state, store, goTo, reference, escapeHTML, toast,
+  state, store, goTo, jumpTo, reference, verseRef, changeVerses, escapeHTML, toast,
   ready: false,
   showTab,
+  noteCount: null,   // set by connect.js: how many notes are on the picked verses
   // Adopt bookmarks saved from another device.
   // Keys shared through the group database once you're approved ("esv" or "niv").
   setSharedKey(name, key) {
@@ -1159,6 +1572,8 @@ document.querySelectorAll(".tab").forEach((tab) => {
     const reading = tab.dataset.view === "bibleView";
     els.translationBtn.style.visibility = reading ? "" : "hidden";
     els.bookmarkBtn.style.visibility = reading ? "" : "hidden";
+    document.body.classList.toggle("off-bible", !reading);   // the back button and verse bar belong to the reader
+    if (!reading && selection && !selection.changing) clearSelection();
     if (tab.dataset.view === "bookmarksView") renderBookmarks();
     // The place may have changed while the reader was hidden (e.g. synced from another device).
     if (reading && state.verse > 1) $(`v${state.verse}`)?.scrollIntoView({ block: "start" });

@@ -87,11 +87,11 @@ main { position: fixed; inset: var(--top) 0 var(--bottom) 0; }
   max-width: 680px; margin: 0 auto;
   padding: 20px 20px 32px;
   font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
-  font-size: 19px; line-height: 1.7;
+  font-size: calc(19px * var(--text-scale, 1)); line-height: var(--leading, 1.7);   /* text size and spacing: the eye menu */
 }
-.chapter h2 { font-family: inherit; font-size: 28px; font-weight: 600; margin: 8px 0 18px; }
+.chapter h2 { font-family: inherit; font-size: calc(28px * var(--text-scale, 1)); line-height: 1.3; font-weight: 600; margin: 8px 0 18px; }
 .verse { margin: 0 0 6px; scroll-margin-top: 12px; }
-.verse sup { font-family: -apple-system, sans-serif; font-size: 11px; font-weight: 600; color: var(--muted); margin-right: 4px; }
+.verse sup { font-family: -apple-system, sans-serif; font-size: calc(11px * var(--text-scale, 1)); font-weight: 600; color: var(--muted); margin-right: 4px; }
 .copyright a { color: var(--accent); }
 .copyright { margin-top: 24px; font-family: -apple-system, sans-serif; font-size: 12px; line-height: 1.4; color: var(--muted); }
 .nav-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 32px; font-family: -apple-system, sans-serif; }
@@ -117,11 +117,12 @@ main { position: fixed; inset: var(--top) 0 var(--bottom) 0; }
   display: flex; align-items: center; gap: 8px; padding: 0 8px 0 14px;
   background: var(--bg); border-top: 1px solid var(--line);
 }
-.player-info { flex: none; width: 34%; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.player-info { flex: none; width: 30%; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
 .player-info b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .player-info span { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .player audio { flex: 1; min-width: 0; height: 40px; }
 .player[hidden] { display: none; }
+.speed-btn { flex: none; min-width: 44px; height: 32px; padding: 0 8px; border-radius: 16px; background: var(--chip); color: var(--accent); font-size: 13px; font-weight: 700; }
 body.listening main { bottom: calc(var(--bottom) + 64px); }
 body.listening .toast { bottom: calc(var(--bottom) + 76px); }
 .listen-btn { display: inline-flex; align-items: center; gap: 6px; margin: -8px 0 16px; padding: 6px 12px; border-radius: 16px; background: var(--chip); color: var(--accent); font-size: 14px; font-weight: 600; }
@@ -273,3 +274,73 @@ dialog .spaced { margin-top: 14px; }
 .manage .person { border-bottom: none; border-top: 1px solid var(--line); }
 .person-actions { flex-wrap: wrap; justify-content: flex-end; }
 .card-btn:disabled, .link-btn:disabled { opacity: .4; }
+
+/* Text size and spacing, in the eye menu */
+.text-row { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 12px; }
+.text-row > span:first-child { flex: 1; }
+.popover .text-row button { width: 40px; height: 36px; padding: 0; justify-content: center; background: var(--chip); color: var(--accent); font-weight: 700; }
+.text-value { min-width: 78px; text-align: center; color: var(--muted); font-size: 14px; }
+
+/* Picked verses and the bar that acts on them */
+.verse.picked { background: color-mix(in srgb, var(--accent) 26%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 26%, transparent); }
+.verse-bar {
+  position: fixed; left: 8px; right: 8px; bottom: calc(var(--bottom) + 8px); z-index: 11;
+  max-width: 560px; margin: 0 auto; padding: 8px 8px 8px 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / .18); font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.verse-bar[hidden], .off-bible .verse-bar { display: none; }
+body.listening .verse-bar { bottom: calc(var(--bottom) + 72px); }
+.bar-top { display: flex; align-items: center; gap: 6px; margin: -2px 0 6px; }
+.bar-top .bar-ref { flex: 1; margin: 0 0 0 2px; }
+.bar-top .bar-close { flex: none; width: 32px; height: 28px; border-radius: 8px; color: var(--muted); }
+.bar-ref { margin: 0 0 6px 2px; color: var(--accent); font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-actions { display: flex; gap: 6px; }
+.bar-actions button { flex: 1; min-width: 0; height: 40px; padding: 0 2px; border-radius: 9px; background: var(--chip); color: var(--accent); font-size: 13.5px; font-weight: 600; white-space: nowrap; }
+.bar-actions .bar-main { background: var(--accent); color: var(--surface); }
+body.picking .chapter { padding-bottom: 140px; }   /* the last verses can scroll up past the bar */
+
+/* Back to where you were reading */
+.back-bar {
+  position: fixed; top: calc(var(--top) + 8px); left: 50%; z-index: 9; transform: translateX(-50%);
+  display: flex; align-items: center; max-width: calc(100vw - 32px);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 4px 16px rgb(0 0 0 / .12);
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.back-bar[hidden], .off-bible .back-bar { display: none; }
+.back-btn { height: 36px; padding: 0 6px 0 14px; color: var(--accent); font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.back-close { width: 34px; height: 36px; color: var(--muted); font-size: 13px; }
+body.has-back:not(.off-bible) .chapter { padding-top: 60px; }
+
+/* Compare and How to use: full-screen sheets like search */
+.sheet-head h2 { flex: 1; margin: 0; padding-left: 4px; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.compare-name { margin-left: 6px; color: var(--muted); font-weight: 400; }
+.compare-row .snippet { font-size: calc(17px * var(--text-scale, 1)); line-height: 1.5; }
+.compare-row .snippet sup { margin: 0 2px; font-family: -apple-system, sans-serif; font-size: 11px; color: var(--muted); }
+.compare-missing, #compareNotices { max-width: 680px; margin: 12px auto 0; padding: 0 8px; }
+#compareNotices { padding-bottom: 24px; }
+.help { max-width: 680px; margin: 0 auto; padding: 4px 20px calc(28px + env(safe-area-inset-bottom)); font-size: 16px; }
+.help h3 { margin: 20px 0 6px; color: var(--accent); font-size: 16px; }
+.help ul { margin: 0; padding-left: 20px; }
+.help li { margin: 0 0 8px; line-height: 1.45; }
+.help-link { display: block; width: 100%; padding: 20px 16px; color: var(--muted); font-size: 14px; text-align: center; text-decoration: underline; }
+
+/* Notes: replies, actions, and your own notes in the Bookmarks tab */
+.note-actions { display: flex; flex-wrap: wrap; margin: 0 -8px; }
+.reply { margin: 6px 0 2px 12px; padding-left: 10px; border-left: 2px solid var(--line); }
+.reply .who { font-size: 13px; }
+.note-card { width: 100%; text-align: left; }
+.secondary-btn.wide { width: 100%; }
+
+/* Related passages under each chapter */
+.related { margin-top: 28px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 14px; line-height: 1.5; }
+.related summary { display: inline-block; padding: 6px 12px; border-radius: 16px; background: var(--chip); color: var(--accent); font-weight: 600; cursor: pointer; list-style: none; }
+.related summary::-webkit-details-marker { display: none; }
+.related summary::after { content: " ›"; }
+.related[open] summary::after { content: " ⌄"; }
+.related-row { margin: 8px 0 0; color: var(--muted); }
+.related-verse { color: var(--text); font-weight: 600; }
+.related-row button { padding: 2px 0; color: var(--accent); }
+.related-credit { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
+.related-credit a, .related-note a { color: var(--accent); }
+.related-note { max-width: 680px; margin: 12px auto 0; padding: 0 8px; }
