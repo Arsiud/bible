@@ -166,7 +166,10 @@ async function getVerses() {
   if (offline[translation]) return offline[translation].books[book].chapters[chapter];
   if (BUNDLED[translation]) return (await loadBundled(translation))[book].chapters[chapter];
   if (isApiTranslation(translation)) return fetchApiChapter(translation, book, chapter);
-  return fetchESV(`${state.books[book].name} ${chapter + 1}`);
+  // In one-chapter books (Obadiah, Philemon, 2 and 3 John, Jude) the ESV reads "Jude 1" as verse 1,
+  // so those are asked for by the book's name.
+  const { name, chapters } = state.books[book];
+  return fetchESV(chapters.length === 1 ? name : `${name} ${chapter + 1}`);
 }
 
 /* The NIV and NASB (2020) come from API.Bible (non-commercial Starter plan), using one shared key.
@@ -243,7 +246,12 @@ async function fetchApiChapter(code, book, chapter) {
 async function fetchESV(reference) {
   const key = state.esvKey.trim() || state.sharedEsvKey;
   if (!key) throw new Error("Sign in on the Connection tab to read the ESV, or add your own free ESV API key in Settings.");
-  if (esvCache.has(reference)) return esvCache.get(reference);
+  if (esvCache.has(reference)) {
+    const verses = esvCache.get(reference);
+    esvCache.delete(reference);   // most recently read goes last, so it's dropped last
+    esvCache.set(reference, verses);
+    return verses;
+  }
 
   const params = new URLSearchParams({
     q: reference,
@@ -272,6 +280,14 @@ async function fetchESV(reference) {
   const text = (await response.json()).passages?.[0] ?? "";
   const verses = splitVerses(text);
   esvCache.set(reference, verses);
+  // The ESV API's terms allow keeping up to 500 verses, so the chapters read longest ago are let go.
+  let kept = 0;
+  for (const v of esvCache.values()) kept += v.length;
+  for (const [ref, v] of esvCache) {
+    if (kept <= 500 || ref === reference) break;
+    esvCache.delete(ref);
+    kept -= v.length;
+  }
   return verses;
 }
 
@@ -835,9 +851,10 @@ async function runEsvSearch(token, page = 1) {
     // ESV's search matches all the words, so mark them one by one.
     search.exact = search.words = new RegExp(`${WORD_START}(?:${queryWords(search.query).map(wordPattern).join("|")})`, "giu");
     for (const r of data.results) {
-      const m = r.reference.match(/^(.+) (\d+):(\d+)/);
-      const book = m && state.books.findIndex((b) => b.name === (ESV_BOOK_NAMES[m[1]] ?? m[1]));
-      if (book >= 0) search.results.push({ book, chapter: Number(m[2]) - 1, verse: Number(m[3]), text: r.content });
+      // "John 3:16", or "Jude 5" in one-chapter books
+      const m = r.reference.match(/^(.+?) (?:(\d+):)?(\d+)/);
+      const book = m ? state.books.findIndex((b) => b.name === (ESV_BOOK_NAMES[m[1]] ?? m[1])) : -1;
+      if (book >= 0) search.results.push({ book, chapter: Number(m[2] ?? 1) - 1, verse: Number(m[3]), text: r.content });
     }
     const n = data.total_results;
     $("searchStatus").textContent = n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ESV` : "Nothing found in the ESV";
@@ -991,7 +1008,8 @@ function updateBookmarkBtn() {
   els.bookmarkBtn.classList.toggle("on", marked);
 }
 
-function saveBookmarks({ updated = Date.now(), remote = false } = {}) {
+// A change here is always newer than anything this device has seen, even if another device's clock runs ahead.
+function saveBookmarks({ updated = Math.max(Date.now(), state.bookmarksUpdated + 1), remote = false } = {}) {
   state.bookmarksUpdated = updated;
   store.set("tempBookmark", state.tempBookmark);
   store.set("bookmarks", state.bookmarks);
@@ -1015,7 +1033,7 @@ function toast(message) {
 els.bookmarkBtn.addEventListener("click", () => {
   saveVisibleVerse();
   const { book, chapter, verse } = state;
-  state.tempBookmark = { book, chapter, verse, created: Date.now() };
+  state.tempBookmark = { book, chapter, verse, created: Math.max(Date.now(), (state.tempBookmark?.created ?? 0) + 1) };
   saveBookmarks();
   toast(`Bookmarked ${reference(state.tempBookmark)} — name it in Bookmarks to keep it`);
 });

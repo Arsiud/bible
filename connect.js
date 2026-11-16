@@ -23,7 +23,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, addDoc, onSnapshot,
-  query, orderBy, limit, arrayUnion, arrayRemove, serverTimestamp,
+  query, orderBy, limit, arrayUnion, arrayRemove, serverTimestamp, runTransaction,
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-firestore.js";
 import { firebaseConfig, ownerUid } from "./firebase-config.js";
 
@@ -108,11 +108,23 @@ if (auth) onAuthStateChanged(auth, async (signedIn) => {
     highlightVerses();
     return;
   }
-  const snap = await attempt(() => getDoc(userRef()));
+  const snap = await readProfile(signedIn);
   if (!snap) return;
   if (snap.exists()) listen();
   else { needsNickname = true; renderView(); }
 });
+
+// The profile can't be read while offline (say, the app was opened without signal), so keep trying:
+// otherwise nothing would sync until the app was closed and opened again.
+async function readProfile(signedIn) {
+  for (let delay = 2000; user === signedIn; delay = Math.min(delay * 2, 30000)) {
+    try { return await getDoc(userRef()); } catch (error) {
+      if (error.code === "permission-denied") { console.error(error); return null; }
+    }
+    await new Promise((r) => setTimeout(r, delay));
+  }
+  return null;
+}
 
 // First sign-in: create the profile, keeping any bookmarks already on this device.
 async function createProfile(nickname) {
@@ -139,36 +151,14 @@ function listen() {
     profile = snap.data();
     if (!profile) return;
 
-    if (firstLoad) {
-      // Bookmarks: on a new device, keep both sides so nothing is lost.
-      // (Always combine, whichever side looks newer: this device may hold an old, emptier list.)
-      const remote = profile.bookmarks ?? [];
-      const localIds = new Set(state.bookmarks.map((b) => b.id));
-      const remoteIds = new Set(remote.map((b) => b.id));
-      const fromRemote = remote.filter((b) => !localIds.has(b.id));
-      const fromLocal = state.bookmarks.filter((b) => !remoteIds.has(b.id));
-      const newerTemp = (profile.tempBookmark?.created ?? 0) > (state.tempBookmark?.created ?? 0);
-      const tempBookmark = newerTemp ? profile.tempBookmark : state.tempBookmark;
-      if (fromRemote.length || fromLocal.length || tempBookmark !== state.tempBookmark ||
-          (tempBookmark && !profile.tempBookmark)) {
-        bible.applyBookmarks({
-          bookmarks: [...state.bookmarks, ...fromRemote].sort((a, b) => b.created - a.created),
-          tempBookmark,
-          updated: Date.now(),
-        });
-        pushBookmarks();
-      }
-      if (isOwner()) watchPeople();
-    }
+    if (firstLoad && isOwner()) watchPeople();
+    syncBookmarks(profile);
     if (!positionChecked) {
       positionChecked = true;
       await whenReady;
       applyPosition(profile.position);
       pushPosition(true);
       handlePendingJoin();
-    }
-    if ((profile.bookmarksUpdated ?? 0) > state.bookmarksUpdated) {
-      bible.applyBookmarks({ bookmarks: profile.bookmarks, tempBookmark: profile.tempBookmark, updated: profile.bookmarksUpdated });
     }
     loadSharedKeys();
     syncNasb();
@@ -347,28 +337,114 @@ function writePosition() {
   });
 }
 
-let bookmarkTimer;
-function pushBookmarks() {
-  if (!profile) return;
-  clearTimeout(bookmarkTimer);
-  bookmarkTimer = setTimeout(() => attempt(() => setDoc(userRef(), {
-    bookmarks: state.bookmarks, tempBookmark: state.tempBookmark, bookmarksUpdated: state.bookmarksUpdated,
-  }, { merge: true })), 800);
+// Bookmarks can change on two devices before they hear from each other: one was offline, or was
+// closed before it could send. "Synced" is the database's bookmarksUpdated as this device last saw it
+// (with everything up to then included here), so each side's changes since then can be told apart and
+// an old copy never comes back on its own. A device that has never synced this account keeps both sides.
+const syncedKey = () => `bookmarksSynced:${user.uid}`;
+const getSynced = () => store.get(syncedKey(), null);
+const setSynced = (updated) => store.set(syncedKey(), updated);
+const mine = () => ({ bookmarks: state.bookmarks, tempBookmark: state.tempBookmark, bookmarksUpdated: state.bookmarksUpdated });
+
+// A change from the database.
+function syncBookmarks(remote) {
+  if (writing) return;   // writeBookmarks picks it up
+  const remoteUpdated = remote.bookmarksUpdated ?? 0, synced = getSynced();
+  if (remoteUpdated === state.bookmarksUpdated) return setSynced(remoteUpdated);
+  if (synced !== null && state.bookmarksUpdated === synced && remoteUpdated > synced) {
+    bible.applyBookmarks({ bookmarks: remote.bookmarks, tempBookmark: remote.tempBookmark, updated: remoteUpdated });
+    return setSynced(remoteUpdated);
+  }
+  pushBookmarks(true);   // this device has changes the database doesn't (or the database went back to an older copy)
 }
+
+// What to send, given the database's copy: ours as it is if nothing changed there since we last synced,
+// otherwise both sides combined.
+function combine(remote, synced) {
+  const remoteUpdated = remote.bookmarksUpdated ?? 0, localUpdated = state.bookmarksUpdated;
+  if (remoteUpdated === synced || remoteUpdated === localUpdated) return mine();
+  if (localUpdated === synced) {   // nothing new here: take theirs, unless theirs is an older copy written over ours
+    return remoteUpdated < synced ? mine()
+      : { bookmarks: remote.bookmarks ?? [], tempBookmark: remote.tempBookmark ?? null, bookmarksUpdated: remoteUpdated };
+  }
+  // A bookmark on one side only is new there, unless it was already around at the last sync,
+  // in which case the other side deleted it.
+  const local = new Map(state.bookmarks.map((b) => [b.id, b]));
+  const others = new Map((remote.bookmarks ?? []).map((b) => [b.id, b]));
+  const bookmarks = [];
+  for (const id of new Set([...local.keys(), ...others.keys()])) {
+    const a = local.get(id), b = others.get(id);
+    if (a && b) bookmarks.push(localUpdated > remoteUpdated ? a : b);
+    else if (synced === null || (a ?? b).created > synced) bookmarks.push(a ?? b);
+  }
+  // The temporary bookmark: if both sides have one, the newer. If only one side does, it stays only if it was
+  // dropped after the last sync (or, never synced, after the other side's last change); otherwise it was named.
+  const a = state.tempBookmark, b = remote.tempBookmark ?? null;
+  const tempBookmark = a && b ? (a.created >= b.created ? a : b)
+    : a?.created > (synced ?? remoteUpdated) ? a
+    : b?.created > (synced ?? localUpdated) ? b : null;
+  return {
+    bookmarks: bookmarks.sort((x, y) => y.created - x.created), tempBookmark,
+    bookmarksUpdated: Math.max(Date.now(), localUpdated + 1, remoteUpdated + 1),
+  };
+}
+
+let bookmarkTimer = null, writing = false, writeAgain = false;
+function pushBookmarks(now = false) {
+  if (!profile) return;   // sent once the profile loads (syncBookmarks)
+  clearTimeout(bookmarkTimer);
+  bookmarkTimer = now ? null : setTimeout(writeBookmarks, 800);
+  if (now) writeBookmarks();
+}
+
+// Read-then-write, so a device coming back online never writes over what others saved meanwhile.
+// Offline it fails quietly: the bookmarks are kept here and sent when the app is next online.
+async function writeBookmarks() {
+  bookmarkTimer = null;
+  if (writing) { writeAgain = true; return; }
+  writing = true;
+  const base = state.bookmarksUpdated, synced = getSynced();
+  let sentOk = false;
+  try {
+    const sent = await runTransaction(db, async (tx) => {
+      const next = combine((await tx.get(userRef())).data() ?? {}, synced);
+      tx.set(userRef(), next, { merge: true });
+      return next;
+    });
+    if (state.bookmarksUpdated === base) {   // nothing new here while sending
+      if (sent.bookmarksUpdated !== base) bible.applyBookmarks({ ...sent, updated: sent.bookmarksUpdated });
+      setSynced(sent.bookmarksUpdated);
+    } else writeAgain = true;
+    sentOk = true;
+  } catch (error) {
+    console.warn("Bookmarks not sent yet", error);
+  } finally {
+    writing = false;
+    if (writeAgain) { writeAgain = false; pushBookmarks(true); }
+    else if (sentOk && profile) syncBookmarks(profile);   // anything that arrived while sending
+  }
+}
+
+const unsent = () => !!profile && state.bookmarksUpdated !== getSynced();
+window.addEventListener("online", () => { if (unsent()) pushBookmarks(true); });
 
 window.addEventListener("bible:position", () => {
   // A new chapter is worth telling the group about right away; scrolling within one can wait.
   const where = `${state.book}:${state.chapter}`;
   pushPosition(where !== lastShared);
 });
-window.addEventListener("bible:bookmarks", pushBookmarks);
+window.addEventListener("bible:bookmarks", () => pushBookmarks());
 window.addEventListener("bible:rendered", highlightVerses);
 
 document.addEventListener("visibilitychange", () => {
   if (!profile) return;
-  if (document.visibilityState === "hidden") return pushPosition(true);
-  // Coming back to the app: pick up a newer place from another device.
+  if (document.visibilityState === "hidden") {
+    if (bookmarkTimer) pushBookmarks(true);   // don't leave a bookmark waiting while the app is put away
+    return pushPosition(true);
+  }
+  // Coming back to the app: pick up a newer place from another device, and send bookmarks that couldn't go before.
   attempt(async () => applyPosition((await getDoc(userRef())).data()?.position));
+  if (unsent()) pushBookmarks(true);
 });
 
 /* ---------- Groups ---------- */
