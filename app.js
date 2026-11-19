@@ -30,6 +30,7 @@ const store = {
 const state = {
   books: [],                                  // [{ name, chapters: [[verse text]] }] from kjv.json
   translation: store.get("translation", "WEB"),
+  order: store.get("order", "canon"),         // "canon" (the printed order) or "chrono" (chronological, chrono.js)
   book: store.get("book", 0),
   chapter: store.get("chapter", 0),
   verse: store.get("verse", 1),               // last verse at the top of the screen
@@ -69,6 +70,28 @@ function chapterLabel(book, chapter) {
   return `${bookName(book)} ${chapter + 1}` + (synodal && synodal !== chapter + 1 ? ` (${synodal})` : "");
 }
 const bundled = new Map();                    // code -> Promise of books
+
+// The chronological order as a list of chapters, each knowing its era (built from chrono.js).
+const chrono = { eras: [], list: [], at: new Map() };   // at: "book,chapter" -> place in the list
+function buildChrono() {
+  CHRONO_ERAS.forEach(([title, readings], era) => {
+    const start = chrono.list.length;
+    for (const part of readings.split(";")) {
+      const [, abbreviation, ranges] = part.trim().match(/^(\S+) (.+)$/);
+      const book = CHRONO_ABBREVIATIONS.indexOf(abbreviation);
+      for (const range of ranges.split(",")) {
+        const [from, to = from] = range.trim().split("-").map(Number);
+        for (let c = from; c <= to; c++) {
+          chrono.at.set(`${book},${c - 1}`, chrono.list.length);
+          chrono.list.push({ book, chapter: c - 1, era });
+        }
+      }
+    }
+    chrono.eras.push({ title, start, end: chrono.list.length });
+  });
+}
+const chronological = () => state.order === "chrono";
+const chronoPlace = (book = state.book, chapter = state.chapter) => chrono.at.get(`${book},${chapter}`);
 
 function loadBundled(code) {
   if (!bundled.has(code)) {
@@ -319,7 +342,9 @@ async function render({ restoreVerse = state.verse } = {}) {
   try {
     const [verses, related] = await Promise.all([getVerses(), relatedFor(state.book)]);
     if (token !== renderToken) return;   // a newer chapter was requested meanwhile
-    html = `<h2>${escapeHTML(label)}</h2>` + listenButton() +
+    const era = chronological() ? chrono.eras[chrono.list[chronoPlace()].era].title : "";
+    html = (era ? `<p class="era">Chronological · ${escapeHTML(era)}</p>` : "") +
+      `<h2>${escapeHTML(label)}</h2>` + listenButton() +
       verses.map((text, i) => !text ? "" :
         `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}</p>`
       ).join("") +
@@ -341,6 +366,7 @@ async function render({ restoreVerse = state.verse } = {}) {
 
 function neighbor(step) {
   const { books, book, chapter } = state;
+  if (chronological()) return chrono.list[chronoPlace() + step] ?? null;
   const next = chapter + step;
   if (next >= 0 && next < books[book].chapters.length) return { book, chapter: next };
   const nextBook = book + step;
@@ -911,7 +937,7 @@ function saveVisibleVerse() {
 /* ---------- Table of contents drawer ---------- */
 
 function openDrawer() {
-  showBooks();
+  showContents();
   els.scrim.hidden = false;
   els.drawer.classList.add("open");
   els.drawer.setAttribute("aria-hidden", "false");
@@ -922,6 +948,8 @@ function closeDrawer() {
   els.drawer.classList.remove("open");
   els.drawer.setAttribute("aria-hidden", "true");
 }
+
+const showContents = () => chronological() ? showEras() : showBooks();
 
 function showBooks() {
   els.drawerTitle.textContent = "Books";
@@ -937,8 +965,40 @@ function showBooks() {
   els.drawerBody.querySelector(".current")?.scrollIntoView({ block: "center" });
 }
 
+// Chronological: the eras, then an era's chapters in reading order.
+function showEras() {
+  els.drawerTitle.textContent = "Chronological";
+  els.drawerBack.hidden = true;
+  const current = chrono.list[chronoPlace()].era;
+  const rows = (from, to) => chrono.eras.slice(from, to).map((e, i) =>
+    `<button class="book-row${from + i === current ? " current" : ""}" data-era="${from + i}">` +
+    `${escapeHTML(e.title)}<span class="count">${e.end - e.start}</span></button>`
+  ).join("");
+  const nt = chrono.eras.findIndex((e) => chrono.list[e.start].book >= 39);
+  els.drawerBody.innerHTML =
+    `<div class="section-label">Old Testament</div>${rows(0, nt)}` +
+    `<div class="section-label">New Testament</div>${rows(nt)}` +
+    `<button class="help-link" data-help>How to use this app</button>`;
+  els.drawerBody.querySelector(".current")?.scrollIntoView({ block: "center" });
+}
+
+function showEra(era) {
+  const { title, start, end } = chrono.eras[era];
+  els.drawerTitle.textContent = title;
+  els.drawerBack.textContent = "‹ Eras";
+  els.drawerBack.hidden = false;
+  els.drawerBody.innerHTML = `<div class="chapter-grid era-grid">` +
+    chrono.list.slice(start, end).map(({ book, chapter }) =>
+      `<button class="${book === state.book && chapter === state.chapter ? "current" : ""}" data-chapter="${chapter}" data-book="${book}">` +
+      `${escapeHTML(bookName(book))} ${chapter + 1}</button>`
+    ).join("") + `</div>`;
+  els.drawerBody.scrollTop = 0;
+  els.drawerBody.querySelector(".current")?.scrollIntoView({ block: "center" });
+}
+
 function showChapters(book) {
   els.drawerTitle.textContent = bookName(book);
+  els.drawerBack.textContent = "‹ Books";
   els.drawerBack.hidden = false;
   els.drawerBody.innerHTML = `<div class="chapter-grid">` +
     state.books[book].chapters.map((_, c) =>
@@ -951,6 +1011,7 @@ els.drawerBody.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
   if (button.dataset.help !== undefined) { closeDrawer(); $("help").hidden = false; $("help").scrollTop = 0; return; }
+  if (button.dataset.era !== undefined) return showEra(Number(button.dataset.era));
   const book = Number(button.dataset.book);
   if (button.dataset.chapter === undefined) return showChapters(book);
   goTo(book, Number(button.dataset.chapter));
@@ -959,7 +1020,7 @@ els.drawerBody.addEventListener("click", (event) => {
 $("menuBtn").addEventListener("click", openDrawer);
 $("helpClose").addEventListener("click", () => { $("help").hidden = true; });
 $("drawerClose").addEventListener("click", closeDrawer);
-els.drawerBack.addEventListener("click", showBooks);
+els.drawerBack.addEventListener("click", showContents);
 els.scrim.addEventListener("click", closeDrawer);
 
 /* ---------- Translation menu and settings ---------- */
@@ -1582,6 +1643,55 @@ document.querySelectorAll(".tab").forEach((tab) => {
   });
 });
 
+/* ---------- Bible order: hold the Bible tab ---------- */
+
+// Holding the Bible tab chooses the order: the printed one, or chronological (the same chapters in the
+// order of events). It only changes which chapter comes next and how the ☰ list is grouped.
+const bibleTab = document.querySelector('.tab[data-view="bibleView"]');
+const orderMenu = $("orderMenu");
+let tabHeld = false, tabTimer = null;
+
+function showOrder() {
+  bibleTab.querySelector("span").textContent = chronological() ? "Chronological" : "Bible";
+}
+function toggleOrderMenu(show = orderMenu.hidden) {
+  if (show) {
+    orderMenu.innerHTML = [["canon", "Bible", "Books in the usual order"], ["chrono", "Chronological Bible", "Chapters in the order things happened"]]
+      .map(([order, name, about]) => `<button data-order="${order}" role="menuitem"><span>${name}<small>${about}</small></span>` +
+        `<span class="check">${order === state.order ? "✓" : ""}</span></button>`).join("");
+  }
+  orderMenu.hidden = !show;
+}
+function setOrder(order) {
+  if (order === state.order) return;
+  state.order = order;
+  store.set("order", order);
+  showOrder();
+  if (els.bibleView.hidden) showTab("bibleView");
+  render();
+  toast(chronological() ? "Chronological: ☰ lists the eras, and each chapter leads to the next in time." : "Back to the usual order of the books.");
+}
+
+bibleTab.addEventListener("pointerdown", () => {
+  tabHeld = false;
+  clearTimeout(tabTimer);
+  tabTimer = setTimeout(() => { tabHeld = true; toggleOrderMenu(true); }, 500);
+});
+for (const type of ["pointerup", "pointercancel", "pointerleave"]) bibleTab.addEventListener(type, () => clearTimeout(tabTimer));
+bibleTab.addEventListener("contextmenu", (event) => event.preventDefault());
+bibleTab.addEventListener("click", (event) => {
+  if (tabHeld) { tabHeld = false; event.stopImmediatePropagation(); }   // the hold opened the menu; don't also switch tabs
+}, { capture: true });
+document.addEventListener("click", (event) => {
+  if (!orderMenu.hidden && !orderMenu.contains(event.target) && !bibleTab.contains(event.target)) toggleOrderMenu(false);
+});
+orderMenu.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-order]");
+  if (!button) return;
+  toggleOrderMenu(false);
+  setOrder(button.dataset.order);
+});
+
 /* ---------- Start ---------- */
 
 async function start() {
@@ -1595,6 +1705,9 @@ async function start() {
   if (!state.books[state.book]) state.book = 0;
   if (!state.books[state.book].chapters[state.chapter]) state.chapter = 0;
   if (!TRANSLATIONS[state.translation]) state.translation = "WEB";
+  buildChrono();
+  if (state.order !== "chrono") state.order = "canon";
+  showOrder();
   await loadOffline();
   render();
   window.bible.ready = true;

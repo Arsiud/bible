@@ -1,6 +1,6 @@
 // Caches the app, the bundled translations and related passages so it opens offline. Bump VERSION when files change.
-const VERSION = "bible-v33";
-const FILES = ["./", "index.html", "style.css", "app.js", "connect.js", "firebase-config.js", "kjv.json", "web.json", "asv.json", "rst.json", "manifest.json",
+const VERSION = "bible-v34";
+const FILES = ["./", "index.html", "style.css", "app.js", "chrono.js", "connect.js", "firebase-config.js", "kjv.json", "web.json", "asv.json", "rst.json", "manifest.json",
                "icon-180.png", "icon-192.png", "icon-512.png",
                ...Array.from({ length: 66 }, (_, book) => `xrefs/${book}.json`)];   // related passages, for offline
 

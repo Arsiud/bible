@@ -115,6 +115,7 @@
       <h3>Reading</h3>
       <ul>
         <li>Tap <b>☰</b> to choose a book and chapter. Swipe left or right on the text for the next or previous chapter.</li>
+        <li><b>Hold the Bible tab</b> at the bottom to switch to the <b>Chronological Bible</b>: the same chapters, in the order things happened (Job after Genesis 11, the psalms beside David's story, the Gospels woven together, Paul's letters inside Acts). <b>☰</b> then lists eras, and swiping or listening goes on in time order. Hold it again to go back.</li>
         <li>The button at the top right switches translations: WEB, KJV, ASV, Russian Synodal, and once you're signed in and approved, ESV, NIV and NASB.</li>
         <li>The <b>eye</b> sets the look: match your phone, light, dark, gray or a photo of your own, plus <b>text size</b> and <b>spacing</b>.</li>
         <li><b>Related passages</b> at the end of each chapter lists other verses on the same things; tap one to go there.</li>
@@ -165,6 +166,7 @@
   <!-- Translation menu -->
   <div id="translationMenu" class="popover" role="menu" hidden></div>
   <div id="displayMenu" class="popover" role="menu" hidden></div>
+  <div id="orderMenu" class="popover order-menu" role="menu" hidden></div>
   <input id="photoInput" type="file" accept="image/*" hidden>
   <div id="backdrop" class="backdrop" hidden></div>
 
@@ -220,6 +222,7 @@
     window.fumsData = window.fumsData || [];
     window.fums = window.fums || function () { window.fumsData.push(arguments); };
   </script>
+  <script src="chrono.js"></script>
   <script src="app.js"></script>
   <script type="module" src="connect.js"></script>
 </body>

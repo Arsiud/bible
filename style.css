@@ -186,6 +186,12 @@ body.listening .toast { bottom: calc(var(--bottom) + 76px); }
 .popover button { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; padding: 11px 12px; border-radius: 9px; text-align: left; }
 .popover button:hover { background: var(--chip); }
 .popover .check { color: var(--accent); font-weight: 700; }
+.order-menu { top: auto; right: auto; left: 8px; bottom: calc(var(--bottom) + 6px); }
+.order-menu small { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; }
+.tab { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.chapter .era { margin: 4px 0 -12px; color: var(--muted); font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+.era-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+.era-grid button { height: auto; min-height: 48px; padding: 6px 10px; font-size: 15px; }
 .popover hr { border: 0; border-top: 1px solid var(--line); margin: 6px 4px; }
 
 /* Settings */
