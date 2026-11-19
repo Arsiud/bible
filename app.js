@@ -8,6 +8,7 @@ const TRANSLATIONS = {
   ESV: "English Standard Version",
   NIV: "New International Version",
   NASB: "New American Standard Bible (2020)",
+  NTV: "Nueva Traducción Viviente (Spanish)",
 };
 
 const ESV_COPYRIGHT =
@@ -36,7 +37,7 @@ const state = {
   verse: store.get("verse", 1),               // last verse at the top of the screen
   esvKey: store.get("esvKey", ""),
   sharedEsvKey: "",                           // from the group database once approved; never saved on the device
-  sharedNivKey: "",                           // API.Bible key (NIV and NASB), same rules as the ESV key
+  sharedNivKey: "",                           // API.Bible key (NIV, NASB, NTV), same rules as the ESV key
   tempBookmark: store.get("tempBookmark", null),   // { book, chapter, verse, created } — unnamed, replaced by the next tap
   bookmarks: store.get("bookmarks", []),           // [{ id, name, notes, book, chapter, verse, created }]
   positionUpdated: store.get("positionUpdated", 0),   // timestamps let the newest device win when syncing
@@ -60,11 +61,19 @@ const RUSSIAN_BOOKS = ("Бытие|Исход|Левит|Числа|Второз
   "Захария|Малахия|От Матфея|От Марка|От Луки|От Иоанна|Деяния|Римлянам|1 Коринфянам|2 Коринфянам|Галатам|" +
   "Ефесянам|Филиппийцам|Колоссянам|1 Фессалоникийцам|2 Фессалоникийцам|1 Тимофею|2 Тимофею|Титу|Филимону|" +
   "Евреям|Иакова|1 Петра|2 Петра|1 Иоанна|2 Иоанна|3 Иоанна|Иуды|Откровение").split("|");
+// The NTV (Spanish) shows Spanish book names; its verse numbers are the English ones.
+const SPANISH_BOOKS = ("Génesis|Éxodo|Levítico|Números|Deuteronomio|Josué|Jueces|Rut|1 Samuel|2 Samuel|1 Reyes|2 Reyes|" +
+  "1 Crónicas|2 Crónicas|Esdras|Nehemías|Ester|Job|Salmos|Proverbios|Eclesiastés|Cantar de los Cantares|Isaías|" +
+  "Jeremías|Lamentaciones|Ezequiel|Daniel|Oseas|Joel|Amós|Abdías|Jonás|Miqueas|Nahúm|Habacuc|Sofonías|Hageo|" +
+  "Zacarías|Malaquías|Mateo|Marcos|Lucas|Juan|Hechos|Romanos|1 Corintios|2 Corintios|Gálatas|Efesios|Filipenses|" +
+  "Colosenses|1 Tesalonicenses|2 Tesalonicenses|1 Timoteo|2 Timoteo|Tito|Filemón|Hebreos|Santiago|1 Pedro|2 Pedro|" +
+  "1 Juan|2 Juan|3 Juan|Judas|Apocalipsis").split("|");
+const BOOK_NAMES = { RST: RUSSIAN_BOOKS, NTV: SPANISH_BOOKS };
 let synodalPsalms = null;   // English psalm number -> Synodal number, once rst.json has loaded
 const PSALMS = 18;
 
 function bookName(book) {
-  return state.translation === "RST" ? RUSSIAN_BOOKS[book] : state.books[book].name;
+  return BOOK_NAMES[state.translation]?.[book] ?? state.books[book].name;
 }
 function chapterLabel(book, chapter) {
   const synodal = state.translation === "RST" && book === PSALMS && synodalPsalms?.[chapter];
@@ -276,7 +285,7 @@ async function versesFor(translation, book, chapter) {
   return fetchESV(chapters.length === 1 ? name : `${name} ${chapter + 1}`);
 }
 
-/* The NIV and NASB (2020) come from API.Bible (non-commercial Starter plan), using one shared key.
+/* The NIV, NASB (2020) and NTV (Spanish) come from API.Bible (non-commercial Starter plan), using one shared key.
    Its terms allow keeping fewer than 500 consecutive verses, so chapters are cached in memory only,
    like the ESV. (The offline NASB is kept by Lockman's own permission; see "Offline licensed copies".) Web apps must report what's read through API.Bible's FUMS script (in index.html). */
 const API_BIBLE = "https://rest.api.bible/v1";
@@ -296,6 +305,13 @@ const API_TRANSLATIONS = {
     fixedNotice: true,
     copyright: "Scripture quotations taken from the New American Standard Bible® (NASB® 2020) Copyright © 1960, " +
       "1971, 1977, 1995, 2020 by The Lockman Foundation. Used by permission. All rights reserved.",
+  },
+  NTV: {
+    language: "spa",
+    find: (b) => /Nueva Traducci[oó]n Viviente/i.test(b.name) || b.abbreviation === "NTV",
+    // Tyndale's standard notice; replaced by API.Bible's own copyright line once it loads.
+    copyright: "Texto bíblico tomado de la Santa Biblia, Nueva Traducción Viviente, © Tyndale House Foundation, 2010. " +
+      "Usado con permiso de Tyndale House Publishers, Inc., Carol Stream, Illinois 60188. Todos los derechos reservados.",
   },
 };
 for (const t of Object.values(API_TRANSLATIONS)) Object.assign(t, { bibleId: null, cache: new Map() });
@@ -327,7 +343,7 @@ async function apiBible(path, params = {}, code = state.translation, { report = 
 async function apiBibleId(code) {
   const t = API_TRANSLATIONS[code];
   if (t.bibleId) return t.bibleId;
-  const found = (await apiBible("/bibles", { language: "eng" }, code)).find(t.find);
+  const found = (await apiBible("/bibles", { language: t.language ?? "eng" }, code)).find(t.find);
   if (!found) throw new Error(`The ${code} isn't enabled for this key yet. Add it in the API.Bible dashboard.`);
   t.bibleId = found.id;
   apiBible(`/bibles/${found.id}`, {}, code).then((b) => { if (b?.copyright && !t.fixedNotice) t.copyright = b.copyright; }).catch(() => {});
@@ -864,7 +880,7 @@ function copyTheOldWay(text) {
 // Tapping one switches to it. Licensed texts show their notices, as on their own pages.
 let compareToken = 0;
 const canRead = (code) => code in BUNDLED || code === "KJV" || !!offline[code] ||
-  (code === "ESV" ? canListen() : !!state.sharedNivKey);   // NIV and NASB share the API.Bible key
+  (code === "ESV" ? canListen() : !!state.sharedNivKey);   // NIV, NASB and NTV share the API.Bible key
 
 function openCompare(s) {
   const token = ++compareToken;
@@ -1263,7 +1279,7 @@ async function bibleForSearch() {
   if (state.translation === "KJV") return state.books;
   if (offline[state.translation]) return offline[state.translation].books;
   if (BUNDLED[state.translation]) return loadBundled(state.translation);
-  return null;   // ESV, NIV and NASB search online
+  return null;   // ESV, NIV, NASB and NTV search online
 }
 
 async function runSearch(query) {
@@ -1467,7 +1483,8 @@ function parseReference(text) {
   const m = text.trim().toLowerCase().replace(/ё/g, "е").replace(/\./g, " ")
     .match(/^(?:([123])\s*|(i{1,3}|first|second|third)\s+)?(\p{L}[\p{L}\s]*?)\s*(?:(\d+)(?:\s*[:,]\s*(\d+)(?:\s*[-–—]\s*(\d+))?)?)?$/u);
   if (!m || !state.books.length) return null;
-  bookKeys ??= state.books.flatMap((b, book) => [{ book, ...splitName(b.name) }, { book, ...splitName(RUSSIAN_BOOKS[book]) }]);
+  bookKeys ??= state.books.flatMap((b, book) => [{ book, ...splitName(b.name) }, { book, ...splitName(RUSSIAN_BOOKS[book]) },
+    { book, ...splitName(SPANISH_BOOKS[book]) }]);
   const num = Number(m[1] ?? { i: 1, ii: 2, iii: 3, first: 1, second: 2, third: 3 }[m[2]] ?? 0);
   const letters = m[3].replace(/\s+/g, "");
   const base = ALIAS.get(letters);

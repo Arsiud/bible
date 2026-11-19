@@ -214,7 +214,7 @@ function watchGroup(code) {
 }
 
 // Translation keys the owner shares with approved people (config/esv, config/niv).
-const SHARED_KEYS = { esv: "ESV", niv: "API.Bible (NIV, NASB)" };   // "niv" holds the API.Bible key
+const SHARED_KEYS = { esv: "ESV", niv: "API.Bible (NIV, NASB, NTV)" };   // "niv" holds the API.Bible key
 let keysLoaded = false;
 async function loadSharedKeys() {
   if (keysLoaded || !(isOwner() || (profile.approved && !profile.blocked))) return;
@@ -813,7 +813,7 @@ view.addEventListener("click", async (event) => {
       `${bible.offline.copied("NASB") ? " The offline NASB will be removed from this device." : ""}`)) authSignOut(auth);
   } else if (data.copyNasb !== undefined) {
     if (!state.sharedNivKey) {
-      toast("Paste your API.Bible key in “Shared API.Bible (NIV, NASB) key” above and tap Save first");
+      toast("Paste your API.Bible key in “Shared API.Bible (NIV, NASB, NTV) key” above and tap Save first");
       $("shared-niv")?.focus();
       return;
     }
