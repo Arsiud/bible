@@ -8,6 +8,7 @@
 // Firestore layout:
 //   users/{uid}                    { nickname, email, approved, blocked, created, groups: [code],
 //                                    position, bookmarks, tempBookmark, bookmarksUpdated,
+//                                    progress: { marks: { "book_chapter_verse": time }, reset }  (chronological reading)
 //                                    offline: ["nasb"] (set by the owner only) }
 //   library/nasb                   { copied, verses }   the owner's private NASB 2020 copy
 //   library/nasb/books/{0..65}     { name, chapters }   chapters as JSON text
@@ -135,6 +136,7 @@ async function createProfile(nickname) {
     nickname, email: user.email ?? "", approved: false, blocked: false,
     created: serverTimestamp(), groups: [],
     bookmarks: state.bookmarks, tempBookmark: state.tempBookmark, bookmarksUpdated: state.bookmarksUpdated,
+    progress: state.progress,
   });
   needsNickname = false;
   listen();
@@ -157,6 +159,8 @@ function listen() {
     if (firstLoad) watchPrivateNotes();
     if (firstLoad && isOwner()) watchPeople();
     syncBookmarks(profile);
+    bible.applyProgress(profile.progress);
+    if (progressUnsent()) pushProgress();
     if (!positionChecked) {
       positionChecked = true;
       await whenReady;
@@ -435,6 +439,40 @@ async function writeBookmarks() {
   }
 }
 
+// Reading progress (chronological): marks merge by keeping the newer one (app.js, Reading progress), so a
+// write is just read, merge, write back. "progressUnsent" remembers changes made offline or not yet sent.
+let progressTimer = null, progressChanges = 0, sendingProgress = false;
+const progressUnsent = () => !!profile && store.get("progressUnsent", false);
+function pushProgress(now = false) {
+  clearTimeout(progressTimer);
+  progressTimer = now ? null : setTimeout(writeProgress, 1500);
+  if (now) writeProgress();
+}
+async function writeProgress() {
+  progressTimer = null;
+  if (!profile || sendingProgress) return;
+  sendingProgress = true;
+  const changes = progressChanges;
+  try {
+    await runTransaction(db, async (tx) => {
+      const merged = bible.mergeProgress((await tx.get(userRef())).data()?.progress, state.progress);
+      tx.update(userRef(), { progress: merged });
+    });
+    if (changes === progressChanges) store.set("progressUnsent", false);
+  } catch (error) {
+    console.warn("Reading progress not sent yet", error);
+  } finally {
+    sendingProgress = false;
+    if (changes !== progressChanges) pushProgress();
+  }
+}
+window.addEventListener("bible:progress", () => {
+  progressChanges++;
+  store.set("progressUnsent", true);
+  pushProgress();
+});
+window.addEventListener("online", () => { if (progressUnsent()) pushProgress(true); });
+
 const unsent = () => !!profile && state.bookmarksUpdated !== getSynced();
 window.addEventListener("online", () => { if (unsent()) pushBookmarks(true); });
 
@@ -450,11 +488,13 @@ document.addEventListener("visibilitychange", () => {
   if (!profile) return;
   if (document.visibilityState === "hidden") {
     if (bookmarkTimer) pushBookmarks(true);   // don't leave a bookmark waiting while the app is put away
+    if (progressTimer) pushProgress(true);
     return pushPosition(true);
   }
   // Coming back to the app: pick up a newer place from another device, and send bookmarks that couldn't go before.
   attempt(async () => applyPosition((await getDoc(userRef())).data()?.position));
   if (unsent()) pushBookmarks(true);
+  if (progressUnsent()) pushProgress(true);
 });
 
 /* ---------- Groups ---------- */

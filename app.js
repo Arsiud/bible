@@ -41,6 +41,7 @@ const state = {
   bookmarks: store.get("bookmarks", []),           // [{ id, name, notes, book, chapter, verse, created }]
   positionUpdated: store.get("positionUpdated", 0),   // timestamps let the newest device win when syncing
   bookmarksUpdated: store.get("bookmarksUpdated", 0),
+  progress: store.get("progress", { marks: {}, reset: 0 }),   // chronological passages read (see Reading progress)
 };
 
 // connect.js listens for these to sync with the group database.
@@ -133,6 +134,44 @@ function passageLabel(p) {
   return `${label}:${p.from}` + (p.to > p.from ? `–${p.to}` : "");
 }
 const samePassage = (a, b) => a.book === b.book && a.chapter === b.chapter && a.from === b.from;
+
+/* ---------- Reading progress (chronological) ---------- */
+
+// Each passage gets a mark when it's finished (moved past, or listened to the end): a time, negative when
+// marked unread again. "Start over" sets reset; marks older than it no longer count. Devices merge by keeping
+// the newer of two marks, so the order things sync in doesn't matter.
+const passageKey = (p) => `${p.book}_${p.chapter}_${p.from}`;
+const isRead = (p) => (state.progress.marks[passageKey(p)] ?? 0) > state.progress.reset;
+function mergeProgress(a, b) {
+  const reset = Math.max(a?.reset ?? 0, b?.reset ?? 0), marks = {};
+  for (const m of [a?.marks ?? {}, b?.marks ?? {}]) {
+    for (const [key, t] of Object.entries(m)) {
+      if (Math.abs(t) > reset && Math.abs(t) > Math.abs(marks[key] ?? 0)) marks[key] = t;
+    }
+  }
+  return { marks, reset };
+}
+function saveProgress() {
+  store.set("progress", state.progress);
+  emit("progress");
+}
+function markRead(p, read = true) {
+  if (isRead(p) === read) return;
+  const key = passageKey(p);
+  const t = Math.max(Date.now(), Math.abs(state.progress.marks[key] ?? 0) + 1, state.progress.reset + 1);
+  state.progress.marks[key] = read ? t : -t;
+  saveProgress();
+}
+// Moving on from a passage (swipe, the next button, or the audio finishing it) counts it as read.
+const finished = (p) => { if (chronological() && p) markRead(p); };
+function progressCounts(from = 0, to = chrono.list.length) {
+  let done = 0, verses = 0;
+  for (let i = from; i < to; i++) {
+    const p = chrono.list[i];
+    if (isRead(p)) { done++; verses += p.to - p.from + 1; }
+  }
+  return { done, total: to - from, verses };
+}
 
 function loadBundled(code) {
   if (!bundled.has(code)) {
@@ -423,7 +462,7 @@ function navButtons() {
   return `<div class="nav-row">` +
     (prev ? `<button data-go="${prev.book},${prev.chapter},${prev.from}">‹ ${escapeHTML(passageLabel(prev))}</button>` : "") +
     `<span class="spacer"></span>` +
-    (next ? `<button data-go="${next.book},${next.chapter},${next.from}">${escapeHTML(passageLabel(next))} ›</button>` : "") +
+    (next ? `<button data-go="${next.book},${next.chapter},${next.from}" data-next>${escapeHTML(passageLabel(next))} ›</button>` : "") +
     `</div>`;
 }
 
@@ -488,6 +527,7 @@ async function swipeEnd(event) {
     addEventListener("bible:rendered", done, { once: true });
     setTimeout(done, 4000);
   });
+  if (swipe.dx < 0) finished(passage());
   goTo(next.book, next.chapter, next.from);
   await rendered;
   slide(-out / 3, 0);
@@ -521,6 +561,7 @@ els.chapter.addEventListener("click", (event) => {
   const button = event.target.closest("[data-go]");
   if (!button) return;
   const [book, chapter, from] = button.dataset.go.split(",").map(Number);
+  if (button.dataset.next !== undefined) finished(passage());
   goTo(book, chapter, from);
 });
 
@@ -621,6 +662,7 @@ function listenStep(step) {
   if (listening.book === null) return;
   const following = listeningHere();
   const next = neighbor(step, listening);
+  if (step > 0) finished(passage(listening.book, listening.chapter, listening.from));
   if (!next) return stopListening();
   if (following) goTo(next.book, next.chapter, next.from);
   listen(next);
@@ -1021,6 +1063,7 @@ function closeDrawer() {
 const showContents = () => chronological() ? showEras() : showBooks();
 
 function showBooks() {
+  delete els.drawerBody.dataset.era;
   els.drawerTitle.textContent = "Books";
   els.drawerBack.hidden = true;
   const rows = (from, to) => state.books.slice(from, to).map((b, i) =>
@@ -1036,36 +1079,48 @@ function showBooks() {
 
 // Chronological: the eras, then an era's chapters in reading order.
 function showEras() {
+  delete els.drawerBody.dataset.era;
   els.drawerTitle.textContent = "Chronological";
   els.drawerBack.hidden = true;
   const current = passage().era;
-  const rows = (from, to) => chrono.eras.slice(from, to).map((e, i) =>
-    `<button class="book-row${from + i === current ? " current" : ""}" data-era="${from + i}">` +
-    `${escapeHTML(e.title)}<span class="count">${e.end - e.start}</span></button>`
-  ).join("");
+  const rows = (from, to) => chrono.eras.slice(from, to).map((e, i) => {
+    const { done, total } = progressCounts(e.start, e.end);
+    return `<button class="book-row era-row${from + i === current ? " current" : ""}${done === total ? " done" : ""}" ` +
+      `data-era="${from + i}" style="--done:${(100 * done / total).toFixed(1)}%">${escapeHTML(e.title)}` +
+      `<span class="count">${done === total ? "✓" : done ? `${done} / ${total}` : total}</span></button>`;
+  }).join("");
   const nt = chrono.eras.findIndex((e) => chrono.list[e.start].book >= 39);
+  const all = progressCounts(), verses = chrono.list.reduce((n, p) => n + p.to - p.from + 1, 0);
+  const percent = all.verses && Math.max(1, Math.floor(100 * all.verses / verses));
   els.drawerBody.innerHTML =
+    `<div class="progress-line">${all.done ? `${percent}% of the Bible read · ${all.done.toLocaleString()} of ` +
+      `${all.total.toLocaleString()} passages` : `${all.total.toLocaleString()} passages · each one you finish is marked here`}</div>` +
     `<div class="section-label">Old Testament</div>${rows(0, nt)}` +
     `<div class="section-label">New Testament</div>${rows(nt)}` +
+    (all.done ? `<button class="help-link" data-reset>Start over (clear reading progress)</button>` : "") +
     `<button class="help-link" data-help>How to use this app</button>`;
   els.drawerBody.querySelector(".current")?.scrollIntoView({ block: "center" });
 }
 
-function showEra(era) {
+function showEra(era, { keepScroll = false } = {}) {
   const { title, start, end } = chrono.eras[era];
+  const scroll = els.drawerBody.scrollTop;
   els.drawerTitle.textContent = title;
   els.drawerBack.textContent = "‹ Eras";
   els.drawerBack.hidden = false;
   els.drawerBody.innerHTML = `<div class="chapter-grid era-grid">` +
     chrono.list.slice(start, end).map((p) =>
-      `<button class="${samePassage(p, passage()) ? "current" : ""}" data-chapter="${p.chapter}" data-book="${p.book}" data-verse="${p.from}">` +
-      `${escapeHTML(passageLabel(p))}</button>`
-    ).join("") + `</div>`;
+      `<button class="${samePassage(p, passage()) ? "current" : ""}${isRead(p) ? " read" : ""}" data-chapter="${p.chapter}" ` +
+      `data-book="${p.book}" data-verse="${p.from}" data-place="${chrono.list.indexOf(p)}">${escapeHTML(passageLabel(p))}</button>`
+    ).join("") + `</div>` + `<p class="drawer-hint">Hold a passage to mark it read or unread.</p>`;
+  els.drawerBody.dataset.era = era;
+  if (keepScroll) return void (els.drawerBody.scrollTop = scroll);
   els.drawerBody.scrollTop = 0;
   els.drawerBody.querySelector(".current")?.scrollIntoView({ block: "center" });
 }
 
 function showChapters(book) {
+  delete els.drawerBody.dataset.era;
   els.drawerTitle.textContent = bookName(book);
   els.drawerBack.textContent = "‹ Books";
   els.drawerBack.hidden = false;
@@ -1080,12 +1135,40 @@ els.drawerBody.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
   if (button.dataset.help !== undefined) { closeDrawer(); $("help").hidden = false; $("help").scrollTop = 0; return; }
+  if (heldPassage) return void (heldPassage = false);   // a hold already marked it
+  if (button.dataset.reset !== undefined) {
+    if (!confirm("Clear your chronological reading progress on all your devices? Your place, bookmarks and notes stay.")) return;
+    state.progress = { marks: {}, reset: Math.max(Date.now(), state.progress.reset + 1) };
+    saveProgress();
+    return showEras();
+  }
   if (button.dataset.era !== undefined) return showEra(Number(button.dataset.era));
   const book = Number(button.dataset.book);
   if (button.dataset.chapter === undefined) return showChapters(book);
   goTo(book, Number(button.dataset.chapter), Number(button.dataset.verse ?? 1));
   closeDrawer();
 });
+// Holding a passage in an era's list marks it read or unread.
+let heldPassage = false, passageTimer = null, holdScroll = 0;
+els.drawerBody.addEventListener("pointerdown", (event) => {
+  const button = event.target.closest("[data-place]");
+  heldPassage = false;
+  clearTimeout(passageTimer);
+  if (!button) return;
+  holdScroll = els.drawerBody.scrollTop;
+  passageTimer = setTimeout(() => {
+    heldPassage = true;
+    const p = chrono.list[Number(button.dataset.place)];
+    markRead(p, !isRead(p));
+    toast(`${passageLabel(p)}: marked ${isRead(p) ? "read" : "unread"}.`);
+    showEra(Number(els.drawerBody.dataset.era), { keepScroll: true });
+  }, 500);
+});
+for (const type of ["pointerup", "pointercancel", "pointerleave"]) els.drawerBody.addEventListener(type, () => clearTimeout(passageTimer));
+els.drawerBody.addEventListener("scroll", () => {   // a finger scrolling the list isn't holding a passage
+  if (Math.abs(els.drawerBody.scrollTop - holdScroll) > 10) clearTimeout(passageTimer);
+}, { passive: true });
+els.drawerBody.addEventListener("contextmenu", (event) => { if (event.target.closest("[data-place]")) event.preventDefault(); });
 $("menuBtn").addEventListener("click", openDrawer);
 $("helpClose").addEventListener("click", () => { $("help").hidden = true; });
 $("drawerClose").addEventListener("click", closeDrawer);
@@ -1686,6 +1769,15 @@ window.bible = {
       if (state.translation === code) render();
     },
   },
+  // Reading progress from the account (merged, never replaced: see Reading progress).
+  applyProgress(remote) {
+    const merged = mergeProgress(state.progress, remote);
+    if (JSON.stringify(merged) === JSON.stringify(state.progress)) return;
+    state.progress = merged;
+    store.set("progress", merged);
+    if (els.drawer.classList.contains("open") && chronological() && !els.drawerBody.dataset.era) showEras();
+  },
+  mergeProgress,
   applyBookmarks({ bookmarks, tempBookmark, updated }) {
     state.bookmarks = bookmarks ?? [];
     state.tempBookmark = tempBookmark ?? null;

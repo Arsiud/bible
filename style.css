@@ -190,6 +190,13 @@ body.listening .toast { bottom: calc(var(--bottom) + 76px); }
 .order-menu small { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; }
 .tab { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .chapter .era { margin: 4px 0 -12px; color: var(--muted); font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+.progress-line { padding: 14px 16px 2px; color: var(--muted); font-size: 13px; }
+.era-row { background: linear-gradient(var(--accent), var(--accent)) left bottom / var(--done, 0%) 3px no-repeat; }
+.era-row.done .count { color: var(--accent); font-weight: 700; }
+.era-grid button.read { opacity: .55; }
+.era-grid button.read::after { content: " ✓"; }
+.era-grid button { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.drawer-hint { margin: 0; padding: 4px 16px 24px; color: var(--muted); font-size: 13px; }
 .era-grid { grid-template-columns: 1fr; gap: 8px; }
 .era-grid button { height: auto; min-height: 44px; padding: 8px 14px; text-align: left; font-size: 16px; }
 .popover hr { border: 0; border-top: 1px solid var(--line); margin: 6px 4px; }
