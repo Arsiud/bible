@@ -190,8 +190,8 @@ body.listening .toast { bottom: calc(var(--bottom) + 76px); }
 .order-menu small { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; }
 .tab { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 .chapter .era { margin: 4px 0 -12px; color: var(--muted); font-size: 13px; font-weight: 600; letter-spacing: .02em; }
-.era-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
-.era-grid button { height: auto; min-height: 48px; padding: 6px 10px; font-size: 15px; }
+.era-grid { grid-template-columns: 1fr; gap: 8px; }
+.era-grid button { height: auto; min-height: 44px; padding: 8px 14px; text-align: left; font-size: 16px; }
 .popover hr { border: 0; border-top: 1px solid var(--line); margin: 6px 4px; }
 
 /* Settings */

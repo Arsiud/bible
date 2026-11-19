@@ -71,8 +71,25 @@ function chapterLabel(book, chapter) {
 }
 const bundled = new Map();                    // code -> Promise of books
 
-// The chronological order as a list of chapters, each knowing its era (built from chrono.js).
-const chrono = { eras: [], list: [], at: new Map() };   // at: "book,chapter" -> place in the list
+// The chronological order as a list of passages (verses from-to of one chapter), each knowing its era
+// (built from chrono.js). A range that runs into the next chapter becomes one passage per chapter.
+const chrono = { eras: [], list: [], at: new Map() };   // at: "book,chapter" -> the chapter's passages, by verse
+const chapterEnd = (book, chapter) => state.books[book].chapters[chapter].length;
+function chapterParts(book, range) {
+  const [a, z] = range.trim().split("-");
+  const [c1, v1] = a.split(":").map(Number);
+  let c2, v2;
+  if (z === undefined) [c2, v2] = [c1, v1];                        // 5 or 5:3
+  else if (z.includes(":")) [c2, v2] = z.split(":").map(Number);   // 5:3-6:2
+  else if (v1 !== undefined) [c2, v2] = [c1, Number(z)];           // 5:3-9
+  else c2 = Number(z);                                             // 5-7
+  const parts = [];
+  for (let c = c1; c <= c2; c++) {
+    parts.push({ chapter: c - 1, from: c === c1 && v1 ? v1 : 1,
+      to: c === c2 && v2 ? v2 : chapterEnd(book, c - 1) });
+  }
+  return parts;
+}
 function buildChrono() {
   CHRONO_ERAS.forEach(([title, readings], era) => {
     const start = chrono.list.length;
@@ -80,18 +97,42 @@ function buildChrono() {
       const [, abbreviation, ranges] = part.trim().match(/^(\S+) (.+)$/);
       const book = CHRONO_ABBREVIATIONS.indexOf(abbreviation);
       for (const range of ranges.split(",")) {
-        const [from, to = from] = range.trim().split("-").map(Number);
-        for (let c = from; c <= to; c++) {
-          chrono.at.set(`${book},${c - 1}`, chrono.list.length);
-          chrono.list.push({ book, chapter: c - 1, era });
+        for (const { chapter, from, to } of chapterParts(book, range)) {
+          const last = chrono.list.at(-1);
+          // Pieces that simply continue each other read as one passage.
+          if (last && last.era === era && last.book === book && last.chapter === chapter && last.to + 1 === from) last.to = to;
+          else chrono.list.push({ book, chapter, from, to, era });
         }
       }
     }
     chrono.eras.push({ title, start, end: chrono.list.length });
   });
+  chrono.list.forEach((p, i) => {
+    const key = `${p.book},${p.chapter}`;
+    if (!chrono.at.has(key)) chrono.at.set(key, []);
+    chrono.at.get(key).push(i);
+  });
+  for (const places of chrono.at.values()) places.sort((a, b) => chrono.list[a].from - chrono.list[b].from);
 }
 const chronological = () => state.order === "chrono";
-const chronoPlace = (book = state.book, chapter = state.chapter) => chrono.at.get(`${book},${chapter}`);
+// The passage holding this verse (the screen shows one passage at a time in chronological order).
+function chronoPlace(book = state.book, chapter = state.chapter, verse = state.verse) {
+  const places = chrono.at.get(`${book},${chapter}`) ?? [0];
+  return places.findLast((i) => chrono.list[i].from <= verse) ?? places[0];
+}
+// What's on screen: the current passage, or in the usual order the whole chapter.
+function passage(book = state.book, chapter = state.chapter, verse = state.verse) {
+  if (chronological()) return chrono.list[chronoPlace(book, chapter, verse)];
+  return { book, chapter, from: 1, to: chapterEnd(book, chapter) };
+}
+// The chapter's last verse in KJV numbering; a translation with an extra verse there still shows it.
+const inPassage = (p, verse) => verse >= p.from && (verse <= p.to || p.to === chapterEnd(p.book, p.chapter));
+function passageLabel(p) {
+  const label = chapterLabel(p.book, p.chapter);
+  if (p.from === 1 && p.to === chapterEnd(p.book, p.chapter)) return label;
+  return `${label}:${p.from}` + (p.to > p.from ? `–${p.to}` : "");
+}
+const samePassage = (a, b) => a.book === b.book && a.chapter === b.chapter && a.from === b.from;
 
 function loadBundled(code) {
   if (!bundled.has(code)) {
@@ -333,7 +374,8 @@ async function render({ restoreVerse = state.verse } = {}) {
   const token = ++renderToken;
   if (state.translation === "RST") await loadBundled("RST").catch(() => {});   // for Synodal psalm numbers
   if (token !== renderToken) return;
-  const label = chapterLabel(state.book, state.chapter);
+  const here = passage();
+  const label = passageLabel(here);
   if (!els.bibleView.hidden) els.title.textContent = label;
   els.translationBtn.textContent = state.translation;
   document.title = `${label} · Bible`;
@@ -342,15 +384,15 @@ async function render({ restoreVerse = state.verse } = {}) {
   try {
     const [verses, related] = await Promise.all([getVerses(), relatedFor(state.book)]);
     if (token !== renderToken) return;   // a newer chapter was requested meanwhile
-    const era = chronological() ? chrono.eras[chrono.list[chronoPlace()].era].title : "";
+    const era = chronological() ? chrono.eras[here.era].title : "";
     html = (era ? `<p class="era">Chronological · ${escapeHTML(era)}</p>` : "") +
       `<h2>${escapeHTML(label)}</h2>` + listenButton() +
-      verses.map((text, i) => !text ? "" :
+      verses.map((text, i) => !text || !inPassage(here, i + 1) ? "" :
         `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}</p>`
       ).join("") +
       (state.translation === "ESV" ? `<p class="copyright">${ESV_COPYRIGHT}</p>` : "") +
       (isApiTranslation(state.translation) ? copyrightNotice(API_TRANSLATIONS[state.translation]) : "") +
-      relatedSection(related?.[state.chapter]);
+      relatedSection(related?.[state.chapter], here);
   } catch (error) {
     if (token !== renderToken) return;
     html = `<div class="empty"><h2>Not available</h2><p>${escapeHTML(error.message)}</p></div>`;
@@ -360,27 +402,28 @@ async function render({ restoreVerse = state.verse } = {}) {
   emit("rendered");
 
   const target = $(`v${restoreVerse}`);
-  if (target && restoreVerse > 1) target.scrollIntoView({ block: "start" });
+  if (target && restoreVerse > here.from) target.scrollIntoView({ block: "start" });
   else els.bibleView.scrollTop = 0;
 }
 
-function neighbor(step) {
-  const { books, book, chapter } = state;
-  if (chronological()) return chrono.list[chronoPlace() + step] ?? null;
+// The passage before or after one (by default the one on screen): { book, chapter, from, to }.
+function neighbor(step, { book, chapter, from } = passage()) {
+  const { books } = state;
+  if (chronological()) return chrono.list[chronoPlace(book, chapter, from) + step] ?? null;
   const next = chapter + step;
-  if (next >= 0 && next < books[book].chapters.length) return { book, chapter: next };
+  const whole = (b, c) => ({ book: b, chapter: c, from: 1, to: chapterEnd(b, c) });
+  if (next >= 0 && next < books[book].chapters.length) return whole(book, next);
   const nextBook = book + step;
   if (nextBook < 0 || nextBook >= books.length) return null;
-  return { book: nextBook, chapter: step > 0 ? 0 : books[nextBook].chapters.length - 1 };
+  return whole(nextBook, step > 0 ? 0 : books[nextBook].chapters.length - 1);
 }
 
 function navButtons() {
   const prev = neighbor(-1), next = neighbor(1);
-  const label = (n) => `${bookName(n.book)} ${n.chapter + 1}`;
   return `<div class="nav-row">` +
-    (prev ? `<button data-go="${prev.book},${prev.chapter}">‹ ${escapeHTML(label(prev))}</button>` : "") +
+    (prev ? `<button data-go="${prev.book},${prev.chapter},${prev.from}">‹ ${escapeHTML(passageLabel(prev))}</button>` : "") +
     `<span class="spacer"></span>` +
-    (next ? `<button data-go="${next.book},${next.chapter}">${escapeHTML(label(next))} ›</button>` : "") +
+    (next ? `<button data-go="${next.book},${next.chapter},${next.from}">${escapeHTML(passageLabel(next))} ›</button>` : "") +
     `</div>`;
 }
 
@@ -445,7 +488,7 @@ async function swipeEnd(event) {
     addEventListener("bible:rendered", done, { once: true });
     setTimeout(done, 4000);
   });
-  goTo(next.book, next.chapter);
+  goTo(next.book, next.chapter, next.from);
   await rendered;
   slide(-out / 3, 0);
   els.chapter.getBoundingClientRect();   // start the slide-in from the other side
@@ -477,8 +520,8 @@ els.chapter.addEventListener("click", (event) => {
   }
   const button = event.target.closest("[data-go]");
   if (!button) return;
-  const [book, chapter] = button.dataset.go.split(",").map(Number);
-  goTo(book, chapter);
+  const [book, chapter, from] = button.dataset.go.split(",").map(Number);
+  goTo(book, chapter, from);
 });
 
 /* ---------- Listening (ESV audio) ---------- */
@@ -486,8 +529,11 @@ els.chapter.addEventListener("click", (event) => {
 // The ESV read by David Cochran Heath, streamed chapter by chapter from Crossway's audio server.
 // Offered to anyone who can read the ESV (shared or own key), whichever translation is on screen.
 const audio = $("audio");
-const listening = { book: null, chapter: null, timings: null, verse: 0 };
-const isPlayingHere = () => listening.book === state.book && listening.chapter === state.chapter && !audio.paused;
+// A passage (verses from-to of a chapter) is played from its first verse; stop and seek are in seconds,
+// once the verse timings are in: where the next passage starts, and where to jump when the recording loads.
+const listening = { book: null, chapter: null, from: 1, to: 1, stop: null, seek: null, timings: null, verse: 0 };
+const listeningHere = () => listening.book !== null && samePassage(listening, passage());
+const isPlayingHere = () => listeningHere() && !audio.paused;
 const canListen = () => !!(state.esvKey.trim() || state.sharedEsvKey);
 const listenLabel = () => isPlayingHere() ? "❚❚ Pause" : state.translation === "ESV" ? "▶ Listen" : "▶ Listen (ESV)";
 
@@ -521,26 +567,41 @@ $("speedBtn").addEventListener("click", () => {
 audio.addEventListener("loadedmetadata", applySpeed);   // some browsers reset the speed for each new recording
 applySpeed();
 
-function listen(book, chapter) {
-  Object.assign(listening, { book, chapter });
+function listen({ book, chapter, from, to }) {
+  Object.assign(listening, { book, chapter, from, to, stop: null, seek: null });
   audio.src = audioUrl(book, chapter);
   applySpeed();
-  $("playerTitle").textContent = `${state.books[book].name} ${chapter + 1}`;
+  const whole = from === 1 && to === chapterEnd(book, chapter);
+  const title = `${state.books[book].name} ${chapter + 1}` + (whole ? "" : `:${from}` + (to > from ? `–${to}` : ""));
+  if (!whole) {
+    verseTimings().then((timings) => {
+      if (listening.book !== book || listening.chapter !== chapter || listening.from !== from) return;
+      const starts = timings?.[book]?.[chapter] ?? [];
+      const start = starts.slice(from - 1).find((t) => t !== null);
+      const stop = starts.slice(to).find((t) => t !== null);   // the first verse after the passage
+      if (stop !== undefined) listening.stop = stop / 10;
+      if (from > 1 && start !== undefined) {
+        if (audio.readyState >= 1) audio.currentTime = start / 10;
+        else listening.seek = start / 10;
+      }
+    });
+  }
+  $("playerTitle").textContent = title;
   $("player").hidden = false;
   document.body.classList.add("listening");
   if ("mediaSession" in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: `${state.books[book].name} ${chapter + 1}`, artist: "David Cochran Heath", album: "ESV Bible",
+      title, artist: "David Cochran Heath", album: "ESV Bible",
     });
   }
   audio.play().catch((error) => { if (error.name !== "AbortError") toast("Couldn't play the audio. Check your connection."); });
 }
 
 function toggleListening() {
-  if (listening.book === state.book && listening.chapter === state.chapter) {
+  if (listeningHere()) {
     if (audio.paused) audio.play().catch(() => toast("Couldn't play the audio. Check your connection."));
     else audio.pause();
-  } else listen(state.book, state.chapter);
+  } else listen(passage());
 }
 
 function stopListening() {
@@ -554,18 +615,25 @@ function stopListening() {
   updateListenButton();
 }
 
-// Next or previous chapter; the reader follows along if it was showing the chapter being read.
+// Next or previous chapter (or passage, in chronological order); the reader follows along if it was
+// showing the one being read.
 function listenStep(step) {
   if (listening.book === null) return;
-  const following = listening.book === state.book && listening.chapter === state.chapter;
-  const saved = { book: state.book, chapter: state.chapter };
-  Object.assign(state, { book: listening.book, chapter: listening.chapter });
-  const next = neighbor(step);
-  Object.assign(state, saved);
+  const following = listeningHere();
+  const next = neighbor(step, listening);
   if (!next) return stopListening();
-  if (following) goTo(next.book, next.chapter);
-  listen(next.book, next.chapter);
+  if (following) goTo(next.book, next.chapter, next.from);
+  listen(next);
 }
+audio.addEventListener("loadedmetadata", () => {
+  if (listening.seek === null) return;
+  audio.currentTime = listening.seek;
+  listening.seek = null;
+});
+// A passage that ends mid-chapter moves on where the next verse starts.
+audio.addEventListener("timeupdate", () => {
+  if (listening.stop !== null && audio.currentTime >= listening.stop) listenStep(1);
+});
 
 // Follow along: highlight the verse being read. Verse start times come from the recordings' own
 // chapter marks (tools/esv_audio_timings.py), fetched the first time someone listens.
@@ -577,8 +645,8 @@ const isVisible = (el) => {
   const view = els.bibleView.getBoundingClientRect(), box = el.getBoundingClientRect();
   return box.bottom > view.top && box.top < view.bottom;
 };
-// The chapter on screen is the one being read (Russian verse numbers differ, so not there).
-const followingHere = () => listening.book === state.book && listening.chapter === state.chapter && state.translation !== "RST";
+// The passage on screen is the one being read (Russian verse numbers differ, so not there).
+const followingHere = () => listeningHere() && state.translation !== "RST";
 
 async function followAlong() {
   const here = followingHere();
@@ -815,9 +883,9 @@ const relatedRef = ([book, chapter, verse, verseEnd]) => verseRef({ book, chapte
 const RELATED_CREDIT = `Related passages: <a href="https://www.openbible.info/labs/cross-references/" target="_blank" rel="noopener">OpenBible.info</a> (CC BY)`;
 
 // { "16": [strong, [book, chapter, verse, verseEnd?], ...] } -> a folded list under the chapter
-function relatedSection(links) {
+function relatedSection(links, here) {
   const rows = Object.entries(links ?? {}).map(([verse, [strong, ...to]]) => [Number(verse), to.slice(0, strong)])
-    .filter(([, to]) => to.length).sort((a, b) => a[0] - b[0]);
+    .filter(([verse, to]) => to.length && inPassage(here, verse)).sort((a, b) => a[0] - b[0]);
   const count = rows.reduce((n, [, to]) => n + to.length, 0);
   if (!count) return "";
   return `<details class="related"${store.get("relatedOpen", false) ? " open" : ""}><summary>Related passages (${count})</summary>` +
@@ -883,8 +951,9 @@ let flash = null;    // { start, end }: verses to light up briefly once the chap
 
 function jumpTo(book, chapter, verse = 1, verseEnd = verse) {
   saveVisibleVerse();
-  if (book !== state.book || chapter !== state.chapter) backTo ??= { book: state.book, chapter: state.chapter, verse: state.verse };
-  if (backTo && backTo.book === book && backTo.chapter === chapter) backTo = null;   // back where it started anyway
+  const there = passage(book, chapter, verse);
+  if (!samePassage(there, passage())) backTo ??= { book: state.book, chapter: state.chapter, verse: state.verse };
+  if (backTo && samePassage(there, passage(backTo.book, backTo.chapter, backTo.verse))) backTo = null;   // back where it started anyway
   flash = { start: verse, end: verseEnd };
   showTab("bibleView");
   goTo(book, chapter, verse);
@@ -969,7 +1038,7 @@ function showBooks() {
 function showEras() {
   els.drawerTitle.textContent = "Chronological";
   els.drawerBack.hidden = true;
-  const current = chrono.list[chronoPlace()].era;
+  const current = passage().era;
   const rows = (from, to) => chrono.eras.slice(from, to).map((e, i) =>
     `<button class="book-row${from + i === current ? " current" : ""}" data-era="${from + i}">` +
     `${escapeHTML(e.title)}<span class="count">${e.end - e.start}</span></button>`
@@ -988,9 +1057,9 @@ function showEra(era) {
   els.drawerBack.textContent = "‹ Eras";
   els.drawerBack.hidden = false;
   els.drawerBody.innerHTML = `<div class="chapter-grid era-grid">` +
-    chrono.list.slice(start, end).map(({ book, chapter }) =>
-      `<button class="${book === state.book && chapter === state.chapter ? "current" : ""}" data-chapter="${chapter}" data-book="${book}">` +
-      `${escapeHTML(bookName(book))} ${chapter + 1}</button>`
+    chrono.list.slice(start, end).map((p) =>
+      `<button class="${samePassage(p, passage()) ? "current" : ""}" data-chapter="${p.chapter}" data-book="${p.book}" data-verse="${p.from}">` +
+      `${escapeHTML(passageLabel(p))}</button>`
     ).join("") + `</div>`;
   els.drawerBody.scrollTop = 0;
   els.drawerBody.querySelector(".current")?.scrollIntoView({ block: "center" });
@@ -1014,7 +1083,7 @@ els.drawerBody.addEventListener("click", (event) => {
   if (button.dataset.era !== undefined) return showEra(Number(button.dataset.era));
   const book = Number(button.dataset.book);
   if (button.dataset.chapter === undefined) return showChapters(book);
-  goTo(book, Number(button.dataset.chapter));
+  goTo(book, Number(button.dataset.chapter), Number(button.dataset.verse ?? 1));
   closeDrawer();
 });
 $("menuBtn").addEventListener("click", openDrawer);
@@ -1638,15 +1707,15 @@ document.querySelectorAll(".tab").forEach((tab) => {
     if (tab.dataset.view === "bookmarksView") renderBookmarks();
     // The place may have changed while the reader was hidden (e.g. synced from another device).
     if (reading && state.verse > 1) $(`v${state.verse}`)?.scrollIntoView({ block: "start" });
-    els.title.textContent = reading ? chapterLabel(state.book, state.chapter)
+    els.title.textContent = reading ? passageLabel(passage())
       : tab.querySelector("span").textContent;
   });
 });
 
 /* ---------- Bible order: hold the Bible tab ---------- */
 
-// Holding the Bible tab chooses the order: the printed one, or chronological (the same chapters in the
-// order of events). It only changes which chapter comes next and how the ☰ list is grouped.
+// Holding the Bible tab chooses the order: the printed one, or chronological (the same verses in the
+// order of events, a passage at a time). Places, bookmarks and notes are verses either way.
 const bibleTab = document.querySelector('.tab[data-view="bibleView"]');
 const orderMenu = $("orderMenu");
 let tabHeld = false, tabTimer = null;
@@ -1656,7 +1725,7 @@ function showOrder() {
 }
 function toggleOrderMenu(show = orderMenu.hidden) {
   if (show) {
-    orderMenu.innerHTML = [["canon", "Bible", "Books in the usual order"], ["chrono", "Chronological Bible", "Chapters in the order things happened"]]
+    orderMenu.innerHTML = [["canon", "Bible", "Books in the usual order"], ["chrono", "Chronological Bible", "Passages in the order things happened"]]
       .map(([order, name, about]) => `<button data-order="${order}" role="menuitem"><span>${name}<small>${about}</small></span>` +
         `<span class="check">${order === state.order ? "✓" : ""}</span></button>`).join("");
   }
@@ -1669,7 +1738,7 @@ function setOrder(order) {
   showOrder();
   if (els.bibleView.hidden) showTab("bibleView");
   render();
-  toast(chronological() ? "Chronological: ☰ lists the eras, and each chapter leads to the next in time." : "Back to the usual order of the books.");
+  toast(chronological() ? "Chronological: ☰ lists the eras, and each passage leads to the next in time." : "Back to the usual order of the books.");
 }
 
 bibleTab.addEventListener("pointerdown", () => {
