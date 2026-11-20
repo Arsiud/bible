@@ -14,8 +14,9 @@ const TRANSLATIONS = {
   NTV: "Nueva Traducción Viviente (Spanish)",
 };
 
-// The Good Tidings Bible is ours and given away (1_Projects/bible-translation/LICENSE.md).
-const GTB_NOTICE = "Good Tidings Bible: public domain (CC0). Copy it, share it and use it freely; no permission needed.";
+// The Good Tidings Bible is ours, given freely (terms: 1_Projects/bible-translation/LICENSE.md).
+const GTB_NOTICE = "Good Tidings Bible © 2026. Free to read, copy and share, and to use in free apps and websites, " +
+  "without asking. Selling it or changing its words needs permission.";
 
 const ESV_COPYRIGHT =
   "Scripture quotations are from the ESV® Bible (The Holy Bible, English Standard Version®), " +
