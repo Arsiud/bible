@@ -357,3 +357,18 @@ body.has-back:not(.off-bible) .chapter { padding-top: 60px; }
 .related-credit { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
 .related-credit a, .related-note a { color: var(--accent); }
 .related-note { max-width: 680px; margin: 12px auto 0; padding: 0 8px; }
+
+/* Good News translation notes */
+.note-mark { display: inline-block; margin-left: 3px; padding: 0 4px; border-radius: 6px; color: var(--accent); font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: .7em; font-weight: 700; line-height: 1.4; vertical-align: super; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.about-notes { margin: -6px 0 18px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 14px; line-height: 1.5; }
+.about-notes summary { display: inline-block; padding: 6px 12px; border-radius: 16px; background: var(--chip); color: var(--accent); font-weight: 600; cursor: pointer; list-style: none; }
+.about-notes summary::-webkit-details-marker { display: none; }
+.about-notes summary::after { content: " ›"; }
+.about-notes[open] summary::after { content: " ⌄"; }
+.tnote { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.tnote p { margin: 4px 0 0; line-height: 1.5; }
+.tnote-kind { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+.tnote.original .tnote-kind { color: var(--accent); }
+.notes-list { padding: 4px 16px 24px; font-size: 16px; }
+.note-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+

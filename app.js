@@ -1,6 +1,7 @@
 "use strict";
 
 const TRANSLATIONS = {
+  GN: "Good News (our translation)",   // the family's own translation of the KJV (1_Projects/bible-translation)
   WEB: "World English Bible",   // the default
   KJV: "King James Version",
   ASV: "American Standard Version",
@@ -50,7 +51,7 @@ const emit = (name, detail) => window.dispatchEvent(new CustomEvent(`bible:${nam
 const esvCache = new Map();                   // in-memory only, per ESV API terms
 
 // Public-domain translations bundled with the app (and cached by sw.js for offline use).
-const BUNDLED = { WEB: "web.json", ASV: "asv.json", RST: "rst.json" };
+const BUNDLED = { GN: "gn.json", WEB: "web.json", ASV: "asv.json", RST: "rst.json" };
 
 // The Russian Synodal (rst.json) was converted to English (KJV) verse numbering so places, bookmarks
 // and family notes line up across translations. Book names show in Russian, and Psalms also show the
@@ -421,6 +422,89 @@ function splitVerses(text) {
   return verses;
 }
 
+/* ---------- Translation notes (Good News) ---------- */
+
+// Our translation comes with the notes made while translating it (tools/app_export.py): ordinary notes
+// (KJV wording, manuscripts, measures, customs) and Original language notes (the Hebrew, Aramaic or Greek
+// behind a word). A small mark after a verse opens them; notes on a whole chapter or book sit under the title.
+const translationNotes = new Map();   // book -> Promise of { book: [note], chapters: {c: [note]}, verses: {"c:v": [note]} }
+function notesFor(book) {
+  if (!translationNotes.has(book)) {
+    translationNotes.set(book, fetch(`gn-notes/${book}.json`).then((r) => r.json())
+      .catch((error) => { translationNotes.delete(book); throw error; }));
+  }
+  return translationNotes.get(book);
+}
+const showingNotes = () => state.translation === "GN" && store.get("translationNotes", true);
+const noteLanguage = (note) => note.o ? (note.t.match(/\((Greek|Hebrew|Aramaic)\b/)?.[1] ?? "") : "";
+function noteMark(verse, notes) {
+  const original = notes.some((n) => n.o);
+  return `<button class="note-mark${original ? " original" : ""}" data-note="${verse}" ` +
+    `aria-label="${notes.length} note${notes.length === 1 ? "" : "s"} on verse ${verse}">${original ? "α" : "†"}</button>`;
+}
+function noteHTML(note, book) {
+  const kind = note.o ? `Original language${noteLanguage(note) ? ` · ${noteLanguage(note)}` : ""}` : "Note";
+  return `<div class="tnote${note.o ? " original" : ""}"><div class="tnote-kind">${kind}` +
+    (note.r ? ` · on ${escapeHTML(note.r)}` : "") + `</div><p>${formatNote(note.t, book)}</p></div>`;
+}
+function aboutSection(notes, here) {
+  if (here.from !== 1) return "";
+  const intro = state.chapter === 0 ? notes.book : [];
+  const about = notes.chapters[state.chapter + 1] ?? [];
+  if (!intro.length && !about.length) return "";
+  const title = intro.length ? `About ${bookName(state.book)}` : state.book === PSALMS ? "About this psalm" : "About this chapter";
+  return `<details class="about-notes"><summary>${title}</summary>` +
+    [...intro, ...about].map((n) => noteHTML(n, state.book)).join("") + `</details>`;
+}
+
+// A note's lead ("Loved" (Greek agapao):) in bold, and Bible references in it made into links.
+let referencePattern = null;
+function formatNote(text, book) {
+  let html = escapeHTML(text);
+  const colon = html.indexOf(": ");
+  if (colon > 0 && colon < 140) html = `<b>${html.slice(0, colon)}</b>${html.slice(colon)}`;
+  if (!referencePattern) {
+    const names = state.books.map((b) => b.name).concat("Psalm").sort((a, b) => b.length - a.length)
+      .map((n) => n.replace(/ /g, "\\s+"));
+    referencePattern = new RegExp(`\\b(${names.join("|")})\\s+(\\d+)(?::(\\d+)(?:-(\\d+)(?!:))?)?|(?<![\\w:])(\\d+):(\\d+)(?:-(\\d+)(?!:))?|([.;]\\s)`, "g");
+  }
+  let current = book;   // bare "48:22" means the book named last in the sentence, or the note's own
+  return html.replace(referencePattern, (match, name, chapter, verse, verseEnd, bareChapter, bareVerse, bareEnd, stop, at, whole) => {
+    if (stop) { current = book; return match; }
+    let target = current;
+    if (name) {
+      target = name === "Psalm" ? PSALMS : state.books.findIndex((b) => b.name === name.replace(/\s+/g, " "));
+      current = target;
+    } else {
+      // "1 Enoch 1:9" and the like: a number after a name that isn't a Bible book is not ours to link.
+      const before = whole.slice(Math.max(0, at - 20), at);
+      if (/[A-Z][a-z]+\s+$/.test(before) && !/\b(?:See|Compare|Also|And|In|At|From|To|Verse|Verses)\s+$/.test(before)) return match;
+      [chapter, verse, verseEnd] = [bareChapter, bareVerse, bareEnd];
+    }
+    const c = Number(chapter) - 1, v = Number(verse ?? 1);
+    if (!state.books[target]?.chapters[c]?.[v - 1]) return match;
+    return `<button class="note-link" data-xref="${target},${c},${v},${Number(verseEnd ?? v)}">${match}</button>`;
+  });
+}
+
+async function openNotes(verse) {
+  const notes = (await notesFor(state.book))?.verses[`${state.chapter + 1}:${verse}`] ?? [];
+  if (!notes.length) return;
+  $("notesTitle").textContent = `Notes on ${bookName(state.book)} ${state.chapter + 1}:${verse}`;
+  $("notesList").innerHTML = notes.map((n) => noteHTML(n, state.book)).join("") +
+    `<p class="related-credit">Notes made while translating this version from the King James Version, ` +
+    `checked against the Hebrew, Aramaic and Greek.</p>`;
+  $("notesSheet").hidden = false;
+  $("notesSheet").scrollTop = 0;
+}
+$("notesClose").addEventListener("click", () => { $("notesSheet").hidden = true; });
+$("notesList").addEventListener("click", (event) => {
+  const link = event.target.closest("[data-xref]");
+  if (!link) return;
+  $("notesSheet").hidden = true;
+  goToRelated(link);
+});
+
 /* ---------- Rendering ---------- */
 
 let renderToken = 0;
@@ -437,13 +521,15 @@ async function render({ restoreVerse = state.verse } = {}) {
 
   let html;
   try {
-    const [verses, related] = await Promise.all([getVerses(), relatedFor(state.book)]);
+    const [verses, related, notes] = await Promise.all([getVerses(), relatedFor(state.book),
+      showingNotes() ? notesFor(state.book).catch(() => null) : null]);
     if (token !== renderToken) return;   // a newer chapter was requested meanwhile
     const era = chronological() ? chrono.eras[here.era].title : "";
     html = (era ? `<p class="era">Chronological · ${escapeHTML(era)}</p>` : "") +
-      `<h2>${escapeHTML(label)}</h2>` + listenButton() +
+      `<h2>${escapeHTML(label)}</h2>` + listenButton() + (notes ? aboutSection(notes, here) : "") +
       verses.map((text, i) => !text || !inPassage(here, i + 1) ? "" :
-        `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}</p>`
+        `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}` +
+        (notes?.verses[`${state.chapter + 1}:${i + 1}`] ? noteMark(i + 1, notes.verses[`${state.chapter + 1}:${i + 1}`]) : "") + `</p>`
       ).join("") +
       (state.translation === "ESV" ? `<p class="copyright">${ESV_COPYRIGHT}</p>` : "") +
       (isApiTranslation(state.translation) ? copyrightNotice(API_TRANSLATIONS[state.translation]) : "") +
@@ -559,6 +645,8 @@ els.bibleView.addEventListener("touchcancel", swipeEnd);   // a turn already dra
 els.chapter.addEventListener("click", (event) => {
   if (swipe.justSwiped) return void (swipe.justSwiped = false);
   if (event.target.closest("[data-listen]")) return toggleListening();
+  const mark = event.target.closest("[data-note]");
+  if (mark && !heldVerse && !selection) return void openNotes(Number(mark.dataset.note));
   const xref = event.target.closest("[data-xref]");
   if (xref) return goToRelated(xref);
   const verse = event.target.closest(".verse");
@@ -1320,15 +1408,37 @@ async function runSearch(query) {
     if (at.length >= needed) close.push({ ...hit, score: at.length, span: Math.max(...at) - Math.min(...at), close: true });
   })));
   close.sort((a, b) => b.score - a.score || a.span - b.span);
-  search.results = [...exact, ...close.slice(0, 300)];
+
+  // Our translation's notes are searched too, so "hesed" or "agape" finds every note on the word.
+  const inNotes = [];
+  if (state.translation === "GN") {
+    const all = await Promise.all(state.books.map((_, b) => notesFor(b).catch(() => null)));
+    if (token !== search.token) return;
+    all.forEach((notes, b) => Object.entries(notes?.verses ?? {}).forEach(([key, list]) => list.forEach((note) => {
+      search.exact.lastIndex = 0;
+      if (!search.exact.test(note.t)) return;
+      const [c, v] = key.split(":").map(Number);
+      inNotes.push({ book: b, chapter: c - 1, verse: v, text: note.t, note: true });
+    })));
+  }
+  search.results = [...exact, ...inNotes, ...close.slice(0, 300)];
 
   const count = (n, what) => `${n ? n.toLocaleString() : "No"} ${what}${n === 1 ? "" : "es"}`;
-  $("searchStatus").textContent = exact.length || close.length
-    ? `${count(exact.length, "exact match")}${close.length ? ` · ${count(close.length, "close match")}` : ""} in the ${state.translation}`
+  $("searchStatus").textContent = exact.length || close.length || inNotes.length
+    ? `${count(exact.length, "exact match")}${close.length ? ` · ${count(close.length, "close match")}` : ""} in the ${state.translation}` +
+      (inNotes.length ? ` · ${inNotes.length.toLocaleString()} in the notes` : "")
     : `Nothing found in the ${state.translation}`;
   showMore();
 }
 
+// A long note shown around the words that matched.
+function excerpt(text) {
+  search.exact.lastIndex = 0;
+  const at = Math.max(0, text.search(search.exact));
+  const from = Math.max(0, text.lastIndexOf(" ", Math.max(0, at - 80)));
+  const to = text.indexOf(" ", Math.min(text.length, at + 160));
+  return (from > 0 ? "… " : "") + text.slice(from, to < 0 ? text.length : to).trim() + (to > 0 ? " …" : "");
+}
 function showMore() {
   const start = search.shown;
   const next = search.results.slice(start, start + PAGE);
@@ -1337,11 +1447,12 @@ function showMore() {
   let html = "";
   next.forEach((r, i) => {
     const previous = search.results[start + i - 1];
-    if (start + i === 0 && !r.close) html += `<div class="results-label">Exact matches</div>`;
+    if (start + i === 0 && !r.close && !r.note) html += `<div class="results-label">Exact matches</div>`;
+    if (r.note && !previous?.note) html += `<div class="results-label">In the translation notes</div>`;
     if (r.close && !previous?.close) html += `<div class="results-label">Close matches</div>`;
     html += `<button class="result" data-go="${r.book},${r.chapter},${r.verse}">` +
-      `<div class="ref">${escapeHTML(`${bookName(r.book)} ${r.chapter + 1}:${r.verse}`)}</div>` +
-      `<div class="snippet">${highlight(r.text, r.close ? search.words : search.exact)}</div></button>`;
+      `<div class="ref">${escapeHTML(`${bookName(r.book)} ${r.chapter + 1}:${r.verse}`)}${r.note ? " · note" : ""}</div>` +
+      `<div class="snippet">${highlight(r.note ? excerpt(r.text) : r.text, r.close ? search.words : search.exact)}</div></button>`;
   });
   if (search.shown < search.results.length || search.esvPage < search.esvTotal || search.nivOffset < search.nivTotal) {
     html += `<button class="more-btn" data-more>Show more</button>`;
@@ -1583,7 +1694,9 @@ function toggleDisplayMenu(show = $("displayMenu").hidden) {
       `<hr><div class="text-row"><span>Text size</span><button data-text="size" data-step="-1" aria-label="Smaller text">A−</button>` +
       `<span id="textSize" class="text-value"></span><button data-text="size" data-step="1" aria-label="Larger text">A+</button></div>` +
       `<div class="text-row"><span>Spacing</span><button data-text="spacing" data-step="-1" aria-label="Less space between lines">−</button>` +
-      `<span id="textSpacing" class="text-value"></span><button data-text="spacing" data-step="1" aria-label="More space between lines">+</button></div>`;
+      `<span id="textSpacing" class="text-value"></span><button data-text="spacing" data-step="1" aria-label="More space between lines">+</button></div>` +
+      (state.translation === "GN" ? `<hr><button data-notes role="menuitem">Translation notes<span class="check">` +
+        `${store.get("translationNotes", true) ? "✓" : ""}</span></button>` : "");
     applyText();
   }
   $("displayMenu").hidden = !show;
@@ -1600,6 +1713,11 @@ document.addEventListener("click", (event) => {
 $("displayMenu").addEventListener("click", (event) => {
   const textButton = event.target.closest("[data-text]");
   if (textButton) return changeText(textButton.dataset.text, Number(textButton.dataset.step));   // the menu stays open
+  if (event.target.closest("[data-notes]")) {
+    store.set("translationNotes", !store.get("translationNotes", true));
+    toggleDisplayMenu(false);
+    return render();
+  }
   const choice = event.target.closest("[data-display]")?.dataset.display;
   if (!choice) return;
   toggleDisplayMenu(false);
