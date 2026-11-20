@@ -14,6 +14,9 @@ const TRANSLATIONS = {
   NTV: "Nueva Traducción Viviente (Spanish)",
 };
 
+// The Good Tidings Bible is ours and given away (1_Projects/bible-translation/LICENSE.md).
+const GTB_NOTICE = "Good Tidings Bible: public domain (CC0). Copy it, share it and use it freely; no permission needed.";
+
 const ESV_COPYRIGHT =
   "Scripture quotations are from the ESV® Bible (The Holy Bible, English Standard Version®), " +
   "© 2001 by Crossway. Used by permission. All rights reserved.";
@@ -534,6 +537,7 @@ async function render({ restoreVerse = state.verse } = {}) {
         (notes?.verses[`${state.chapter + 1}:${i + 1}`] ? noteMark(i + 1, notes.verses[`${state.chapter + 1}:${i + 1}`]) : "") + `</p>`
       ).join("") +
       (state.translation === "ESV" ? `<p class="copyright">${ESV_COPYRIGHT}</p>` : "") +
+      (state.translation === "GTB" ? `<p class="copyright">${GTB_NOTICE}</p>` : "") +
       (isApiTranslation(state.translation) ? copyrightNotice(API_TRANSLATIONS[state.translation]) : "") +
       relatedSection(related?.[state.chapter], here);
   } catch (error) {
