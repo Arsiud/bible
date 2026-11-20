@@ -358,7 +358,7 @@ body.has-back:not(.off-bible) .chapter { padding-top: 60px; }
 .related-credit a, .related-note a { color: var(--accent); }
 .related-note { max-width: 680px; margin: 12px auto 0; padding: 0 8px; }
 
-/* Good News translation notes */
+/* Good Tidings Bible translation notes */
 .note-mark { display: inline-block; margin-left: 3px; padding: 0 4px; border-radius: 6px; color: var(--accent); font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: .7em; font-weight: 700; line-height: 1.4; vertical-align: super; background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .about-notes { margin: -6px 0 18px; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 14px; line-height: 1.5; }
 .about-notes summary { display: inline-block; padding: 6px 12px; border-radius: 16px; background: var(--chip); color: var(--accent); font-weight: 600; cursor: pointer; list-style: none; }

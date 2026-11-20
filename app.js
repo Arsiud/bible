@@ -1,7 +1,9 @@
 "use strict";
 
 const TRANSLATIONS = {
-  GN: "Good News (our translation)",   // the family's own translation of the KJV (1_Projects/bible-translation)
+  // The family's own translation of the KJV (1_Projects/bible-translation). Named from Isaiah 61:1, the "good
+  // tidings" Jesus read at Nazareth as His own mission (Luke 4:18-21).
+  GTB: "Good Tidings Bible (our translation)",
   WEB: "World English Bible",   // the default
   KJV: "King James Version",
   ASV: "American Standard Version",
@@ -51,7 +53,7 @@ const emit = (name, detail) => window.dispatchEvent(new CustomEvent(`bible:${nam
 const esvCache = new Map();                   // in-memory only, per ESV API terms
 
 // Public-domain translations bundled with the app (and cached by sw.js for offline use).
-const BUNDLED = { GN: "gn.json", WEB: "web.json", ASV: "asv.json", RST: "rst.json" };
+const BUNDLED = { GTB: "gtb.json", WEB: "web.json", ASV: "asv.json", RST: "rst.json" };
 
 // The Russian Synodal (rst.json) was converted to English (KJV) verse numbering so places, bookmarks
 // and family notes line up across translations. Book names show in Russian, and Psalms also show the
@@ -422,7 +424,7 @@ function splitVerses(text) {
   return verses;
 }
 
-/* ---------- Translation notes (Good News) ---------- */
+/* ---------- Translation notes (Good Tidings Bible) ---------- */
 
 // Our translation comes with the notes made while translating it (tools/app_export.py): ordinary notes
 // (KJV wording, manuscripts, measures, customs) and Original language notes (the Hebrew, Aramaic or Greek
@@ -430,12 +432,12 @@ function splitVerses(text) {
 const translationNotes = new Map();   // book -> Promise of { book: [note], chapters: {c: [note]}, verses: {"c:v": [note]} }
 function notesFor(book) {
   if (!translationNotes.has(book)) {
-    translationNotes.set(book, fetch(`gn-notes/${book}.json`).then((r) => r.json())
+    translationNotes.set(book, fetch(`gtb-notes/${book}.json`).then((r) => r.json())
       .catch((error) => { translationNotes.delete(book); throw error; }));
   }
   return translationNotes.get(book);
 }
-const showingNotes = () => state.translation === "GN" && store.get("translationNotes", true);
+const showingNotes = () => state.translation === "GTB" && store.get("translationNotes", true);
 const noteLanguage = (note) => note.o ? (note.t.match(/\((Greek|Hebrew|Aramaic)\b/)?.[1] ?? "") : "";
 function noteMark(verse, notes) {
   const original = notes.some((n) => n.o);
@@ -1411,7 +1413,7 @@ async function runSearch(query) {
 
   // Our translation's notes are searched too, so "hesed" or "agape" finds every note on the word.
   const inNotes = [];
-  if (state.translation === "GN") {
+  if (state.translation === "GTB") {
     const all = await Promise.all(state.books.map((_, b) => notesFor(b).catch(() => null)));
     if (token !== search.token) return;
     all.forEach((notes, b) => Object.entries(notes?.verses ?? {}).forEach(([key, list]) => list.forEach((note) => {
@@ -1695,7 +1697,7 @@ function toggleDisplayMenu(show = $("displayMenu").hidden) {
       `<span id="textSize" class="text-value"></span><button data-text="size" data-step="1" aria-label="Larger text">A+</button></div>` +
       `<div class="text-row"><span>Spacing</span><button data-text="spacing" data-step="-1" aria-label="Less space between lines">−</button>` +
       `<span id="textSpacing" class="text-value"></span><button data-text="spacing" data-step="1" aria-label="More space between lines">+</button></div>` +
-      (state.translation === "GN" ? `<hr><button data-notes role="menuitem">Translation notes<span class="check">` +
+      (state.translation === "GTB" ? `<hr><button data-notes role="menuitem">Translation notes<span class="check">` +
         `${store.get("translationNotes", true) ? "✓" : ""}</span></button>` : "");
     applyText();
   }
