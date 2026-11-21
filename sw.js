@@ -1,5 +1,6 @@
 // Caches the app, the bundled translations and related passages so it opens offline. Bump VERSION when files change.
-const VERSION = "bible-v37";
+// The public Good Tidings Bible app shares this site (arsiud.github.io), so only caches named "bible-" are ours to clear.
+const VERSION = "bible-v38";
 const FILES = ["./", "index.html", "style.css", "app.js", "chrono.js", "connect.js", "firebase-config.js", "kjv.json", "gtb.json", "web.json", "asv.json", "rst.json", "manifest.json",
                "icon-180.png", "icon-192.png", "icon-512.png",
                ...Array.from({ length: 66 }, (_, book) => `xrefs/${book}.json`),     // related passages, for offline
@@ -12,7 +13,7 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(caches.keys().then((keys) =>
-    Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)))));
+    Promise.all(keys.filter((k) => k.startsWith("bible-") && k !== VERSION).map((k) => caches.delete(k)))));
   self.clients.claim();
 });
 
