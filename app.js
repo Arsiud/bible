@@ -493,27 +493,15 @@ function formatNote(text, book) {
   });
 }
 
-// Every note in the chapter on one scrolling page, opened at the verse whose mark was tapped.
 async function openNotes(verse) {
-  const notes = await notesFor(state.book);
-  const prefix = `${state.chapter + 1}:`;
-  const verses = Object.entries(notes?.verses ?? {}).filter(([key]) => key.startsWith(prefix))
-    .map(([key, list]) => [Number(key.slice(prefix.length)), list]).sort((a, b) => a[0] - b[0]);
-  if (!verses.some(([v]) => v === verse)) return;
-  const intro = state.chapter === 0 ? notes.book : [];
-  const about = [...intro, ...(notes.chapters[state.chapter + 1] ?? [])];
-  const group = (id, heading, list) => `<section class="tnote-group" id="${id}"><h3>${heading}</h3>` +
-    list.map((n) => noteHTML(n, state.book)).join("") + `</section>`;
-  $("notesTitle").textContent = `Notes on ${chapterLabel(state.book, state.chapter)}`;
-  $("notesList").innerHTML = (about.length ? group("tnotesAbout", intro.length ? `About ${bookName(state.book)}` :
-      state.book === PSALMS ? "About this psalm" : "About this chapter", about) : "") +
-    verses.map(([v, list]) => group(`tnotes${v}`, `Verse ${v}`, list)).join("") +
+  const notes = (await notesFor(state.book))?.verses[`${state.chapter + 1}:${verse}`] ?? [];
+  if (!notes.length) return;
+  $("notesTitle").textContent = `Notes on ${bookName(state.book)} ${state.chapter + 1}:${verse}`;
+  $("notesList").innerHTML = notes.map((n) => noteHTML(n, state.book)).join("") +
     `<p class="related-credit">Notes made while translating this version from the King James Version, ` +
     `checked against the Hebrew, Aramaic and Greek.</p>`;
   $("notesSheet").hidden = false;
-  const here = $(`tnotes${verse}`);
-  here.classList.add("current");
-  $("notesSheet").scrollTop = here.offsetTop - $("notesSheet").querySelector(".sheet-head").offsetHeight;
+  $("notesSheet").scrollTop = 0;
 }
 $("notesClose").addEventListener("click", () => { $("notesSheet").hidden = true; });
 $("notesList").addEventListener("click", (event) => {

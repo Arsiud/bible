@@ -257,7 +257,7 @@ dialog .spaced { margin-top: 14px; }
 .member .when { color: var(--muted); font-size: 13px; }
 .sub-label { padding: 10px 14px 2px; border-top: 1px solid var(--line); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .group-notes { max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
-.note { display: block; width: 100%; padding: 8px 14px; text-align: left; }
+.note { display: block; width: 100%; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; padding: 8px 14px; text-align: left; }
 .note .who { font-size: 14px; color: var(--muted); }
 .note .who b { color: var(--accent); }
 .note .text { white-space: pre-wrap; overflow-wrap: anywhere; }

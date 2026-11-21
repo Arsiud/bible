@@ -666,7 +666,7 @@ function renderView() {
     ).join("");
     const notes = group.notes.map((n) => {
       const replies = group.replies.filter((r) => r.note === n.id).length;
-      return `<button class="note" data-go="${n.book},${n.chapter},${n.verse},${lastVerse(n)}">` +
+      return `<button class="note" data-go="${n.book},${n.chapter},${n.verse},${lastVerse(n)}" data-held-note="${code}/${n.id}">` +
         `<div class="who"><b>${escapeHTML(n.nickname)}</b> on ${escapeHTML(bible.verseRef(n))} · ${ago(n.created)}` +
         `${replies ? ` · ${replies} repl${replies === 1 ? "y" : "ies"}` : ""}</div>` +
         `<div class="text">${escapeHTML(n.text)}</div></button>`;
@@ -780,6 +780,7 @@ view.addEventListener("click", async (event) => {
     try { await sendPasswordResetEmail(auth, email); $("signInError").textContent = `If there's an account for ${email}, a reset link is on its way.`; }
     catch (error) { showError(error); }
   } else if (data.go) {
+    if (heldNote) return void (heldNote = false);   // a hold already opened it
     const [book, chapter, verse = 1, verseEnd = verse] = data.go.split(",").map(Number);
     bible.jumpTo(book, chapter, verse, verseEnd);
   } else if (data.invite) invite(data.invite);
@@ -902,6 +903,11 @@ const findNote = (key) => {
 window.addEventListener("bible:notes", ({ detail }) => {
   if (!db) return;
   if (!user || !profile) return toast("Sign in on the Connection tab to write notes");
+  openNoteDialog(detail);
+});
+
+// The notes on some verses, with Reply, Edit, Change verses and Delete on each, and a box to write.
+function openNoteDialog(detail, replyTo = null) {
   noteRange = { book: detail.book, chapter: detail.chapter, verse: detail.verse,
     ...(detail.verseEnd > detail.verse ? { verseEnd: detail.verseEnd } : {}) };
   $("noteRef").textContent = bible.verseRef(noteRange);
@@ -912,10 +918,33 @@ window.addEventListener("bible:notes", ({ detail }) => {
   const last = store.get("noteAudience", null);
   $("noteGroup").value = last !== null && (last === "" || groups.has(last)) ? last : active[0]?.[0] ?? "";
   renderNoteList();
-  compose({ kind: "new" });
   noteDialog.returnValue = "";
   noteDialog.showModal();
+  compose(replyTo && isActive() ? { kind: "reply", note: replyTo } : { kind: "new" });
+}
+
+// On the Connection tab a tap on a group's note goes to its verses; holding it opens it to reply
+// (and to edit or delete it, if it's yours).
+let heldNote = false, noteTimer = null, noteStart = null;   // noteStart: [x, y, the finger or pointer holding]
+view.addEventListener("pointerdown", (event) => {
+  const button = event.target.closest("[data-held-note]");
+  heldNote = false;
+  clearTimeout(noteTimer);
+  if (!button) return;
+  noteStart = [event.clientX, event.clientY, event.pointerId];
+  noteTimer = setTimeout(() => {
+    const note = findNote(button.dataset.heldNote);
+    if (!note) return;
+    heldNote = true;
+    openNoteDialog({ ...note, verseEnd: lastVerse(note) }, note);
+  }, 500);
 });
+view.addEventListener("pointermove", (event) => {
+  if (noteTimer && event.pointerId === noteStart[2] && Math.hypot(event.clientX - noteStart[0], event.clientY - noteStart[1]) > 10) clearTimeout(noteTimer);
+});
+for (const type of ["pointerup", "pointercancel"]) view.addEventListener(type, () => clearTimeout(noteTimer));
+view.addEventListener("scroll", () => clearTimeout(noteTimer), { capture: true, passive: true });   // scrolling isn't holding
+view.addEventListener("contextmenu", (event) => { if (event.target.closest("[data-held-note]")) event.preventDefault(); });
 
 function compose(next) {
   composing = next;
