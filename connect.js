@@ -202,7 +202,7 @@ function watchGroup(code) {
       group.members = snap.docs.map((d) => ({ uid: d.id, ...d.data() })).sort((a, b) => b.updated - a.updated);
       refresh();
     }, failed),
-    onSnapshot(query(collection(db, "groups", code, "notes"), orderBy("created", "desc"), limit(200)), (snap) => {
+    onSnapshot(query(collection(db, "groups", code, "notes"), orderBy("created", "desc"), limit(1000)), (snap) => {
       group.notes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       refresh();
     }, failed),
@@ -664,7 +664,7 @@ function renderView() {
       `<span><b>${escapeHTML(m.nickname)}</b>${m.uid === user.uid ? " (you)" : ""}</span>` +
       `<span><span class="where">${escapeHTML(reference({ ...m, verse: 1 }))}</span> <span class="when">· ${ago(m.updated)}</span></span></button>`
     ).join("");
-    const notes = group.notes.slice(0, 5).map((n) => {
+    const notes = group.notes.map((n) => {
       const replies = group.replies.filter((r) => r.note === n.id).length;
       return `<button class="note" data-go="${n.book},${n.chapter},${n.verse},${lastVerse(n)}">` +
         `<div class="who"><b>${escapeHTML(n.nickname)}</b> on ${escapeHTML(bible.verseRef(n))} · ${ago(n.created)}` +
@@ -677,7 +677,8 @@ function renderView() {
       `<button class="card-btn" data-invite="${code}">Invite</button></div>` +
       (isOwner() && managing === code ? renderManage(code, group) : "") +
       members +
-      (notes ? `<div class="sub-label">Recent notes</div>${notes}` : "") +
+      // Every note (newest first) in a box of its own that scrolls, so a long list doesn't bury the rest of the page.
+      (notes ? `<div class="sub-label">Notes · ${group.notes.length}</div><div class="group-notes">${notes}</div>` : "") +
       `<div class="group-foot"><button class="link-btn" data-leave="${code}">Leave group</button></div></div>`;
   }).join("");
 

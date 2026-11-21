@@ -256,6 +256,7 @@ dialog .spaced { margin-top: 14px; }
 .member .where { color: var(--accent); font-weight: 600; }
 .member .when { color: var(--muted); font-size: 13px; }
 .sub-label { padding: 10px 14px 2px; border-top: 1px solid var(--line); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.group-notes { max-height: 60vh; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .note { display: block; width: 100%; padding: 8px 14px; text-align: left; }
 .note .who { font-size: 14px; color: var(--muted); }
 .note .who b { color: var(--accent); }
@@ -369,6 +370,8 @@ body.has-back:not(.off-bible) .chapter { padding-top: 60px; }
 .tnote p { margin: 4px 0 0; line-height: 1.5; }
 .tnote-kind { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
 .tnote.original .tnote-kind { color: var(--accent); }
+.tnote-group h3 { margin: 18px 0 0; padding-top: 6px; color: var(--accent); font-size: 15px; }
+.tnote-group.current h3::after { content: " · the verse you tapped"; color: var(--muted); font-weight: 400; }
 .notes-list { padding: 4px 16px 24px; font-size: 16px; }
 .note-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 
