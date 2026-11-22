@@ -669,7 +669,7 @@ function renderView() {
       return `<button class="note" data-go="${n.book},${n.chapter},${n.verse},${lastVerse(n)}" data-held-note="${code}/${n.id}">` +
         `<div class="who"><b>${escapeHTML(n.nickname)}</b> on ${escapeHTML(bible.verseRef(n))} · ${ago(n.created)}` +
         `${replies ? ` · ${replies} repl${replies === 1 ? "y" : "ies"}` : ""}</div>` +
-        `<div class="text">${escapeHTML(n.text)}</div></button>`;
+        quoteLine(n) + `<div class="text">${escapeHTML(n.text)}</div></button>`;
     }).join("");
     return `<div class="group">` +
       `<div class="group-head"><h3>${escapeHTML(group.name)} <span class="code">${code}</span></h3>` +
@@ -859,13 +859,21 @@ function notesOn(book, chapter, start = 1, end = Infinity) {
   return found.sort((a, b) => a.created - b.created);
 }
 bible.noteCount = (s) => user ? notesOn(s.book, s.chapter, s.start, s.end).length : 0;
+// Every note you can see, for search: your own, then your groups'.
+bible.myNotes = () => !user ? [] : [...privateNotes.map((n) => ({ ...n, label: "Your note" })),
+  ...[...groups.values()].flatMap((g) => g.notes.map((n) => ({ ...n, label: `${n.nickname} in ${g.name}` })))];
 
+// Shade the verses with notes, or just the words a note is on when they were picked in this translation.
 function highlightVerses() {
-  document.querySelectorAll(".verse.noted").forEach((v) => v.classList.remove("noted"));
+  document.querySelectorAll(".verse.noted, .w.noted").forEach((v) => v.classList.remove("noted"));
   for (const n of notesOn(state.book, state.chapter)) {
-    for (let v = n.verse; v <= lastVerse(n); v++) document.getElementById(`v${v}`)?.classList.add("noted");
+    const words = n.words?.t === state.translation &&
+      bible.pickedWords({ start: n.verse, end: lastVerse(n), words: n.words });
+    if (words?.length) words.forEach((w) => w.classList.add("noted"));
+    else for (let v = n.verse; v <= lastVerse(n); v++) document.getElementById(`v${v}`)?.classList.add("noted");
   }
 }
+const quoteLine = (n) => n.quote ? `<div class="quote">“${escapeHTML(n.quote)}”</div>` : "";
 
 // Keep an open dialog current as notes and replies come in.
 function refreshNotes() { if (noteDialog.open) renderNoteList(); }
@@ -881,7 +889,7 @@ function renderNoteList() {
     const on = n.verse !== verse || lastVerse(n) !== lastVerse(noteRange) ? ` on ${escapeHTML(bible.verseRef(n))}` : "";
     const replies = n.code ? groups.get(n.code).replies.filter((r) => r.note === n.id).sort((a, b) => a.created - b.created) : [];
     return `<div class="note"><div class="who">${who}${on} · ${ago(n.created)}${n.edited ? " · edited" : ""}</div>` +
-      `<div class="text">${escapeHTML(n.text)}</div>` +
+      quoteLine(n) + `<div class="text">${escapeHTML(n.text)}</div>` +
       replies.map((r) => `<div class="reply"><div class="who"><b>${escapeHTML(r.nickname)}</b> · ${ago(r.created)}` +
         (r.uid === user.uid || isOwner() ? ` · <button type="button" class="link-btn" data-delete-reply="${n.code}/${r.id}">Delete</button>` : "") +
         `</div><div class="text">${escapeHTML(r.text)}</div></div>`).join("") +
@@ -908,9 +916,11 @@ window.addEventListener("bible:notes", ({ detail }) => {
 
 // The notes on some verses, with Reply, Edit, Change verses and Delete on each, and a box to write.
 function openNoteDialog(detail, replyTo = null) {
+  const words = detail.words?.translation && detail.words;   // some words picked, in the translation on screen
   noteRange = { book: detail.book, chapter: detail.chapter, verse: detail.verse,
-    ...(detail.verseEnd > detail.verse ? { verseEnd: detail.verseEnd } : {}) };
-  $("noteRef").textContent = bible.verseRef(noteRange);
+    ...(detail.verseEnd > detail.verse ? { verseEnd: detail.verseEnd } : {}),
+    ...(words ? { words: { t: words.translation, from: words.from, to: words.to }, quote: words.quote.slice(0, 500) } : {}) };
+  $("noteRef").textContent = bible.verseRef(noteRange) + (noteRange.quote ? ` · “${noteRange.quote}”` : "");
   // Who sees it: just you, or one of your groups (the last choice is remembered).
   const active = isActive() ? [...groups.entries()] : [];
   $("noteGroup").innerHTML = `<option value="">Just me</option>` +
@@ -972,7 +982,8 @@ $("noteList").addEventListener("click", (event) => {
     const note = findNote(d.noteVerses);
     noteDialog.close();
     return bible.changeVerses(note, "Verses for your note", (start, end) =>
-      attempt(() => updateDoc(notePath(note), { verse: start, verseEnd: end > start ? end : deleteField(), edited: Date.now() })));
+      attempt(() => updateDoc(notePath(note), { verse: start, verseEnd: end > start ? end : deleteField(), edited: Date.now(),
+        ...(note.words ? { words: deleteField(), quote: deleteField() } : {}) })));   // now on whole verses
   }
   if (d.deleteReply) {
     const [code, id] = d.deleteReply.split("/");
@@ -1014,7 +1025,7 @@ function renderPrivateNotes() {
   $("myNotes").innerHTML = privateNotes.length ? `<div class="section-label">My notes · just me</div>` +
     privateNotes.map((n) => `<button class="card note-card" data-go="${n.book},${n.chapter},${n.verse},${lastVerse(n)}">` +
       `<div class="card-main"><div class="card-ref">${escapeHTML(bible.verseRef(n))}</div>` +
-      `<div class="card-notes">${escapeHTML(n.text)}</div></div></button>`).join("") : "";
+      quoteLine(n) + `<div class="card-notes">${escapeHTML(n.text)}</div></div></button>`).join("") : "";
 }
 $("myNotes").addEventListener("click", (event) => {
   const go = event.target.closest("[data-go]");

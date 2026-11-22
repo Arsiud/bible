@@ -52,6 +52,13 @@
 
   <!-- Acting on picked verses -->
   <div id="verseBar" class="verse-bar" hidden></div>
+  <!-- Stepping through search results -->
+  <div id="searchNav" class="search-nav" hidden>
+    <button type="button" id="searchPrev" aria-label="Previous result">‹</button>
+    <button type="button" id="searchNavLabel" class="search-nav-label"></button>
+    <button type="button" id="searchNext" aria-label="Next result">›</button>
+    <button type="button" id="searchNavClose" aria-label="Done with these results">✕</button>
+  </div>
 
   <div id="player" class="player" hidden>
     <div class="player-info"><b id="playerTitle"></b><span>ESV audio · read by David Cochran Heath</span></div>
@@ -92,6 +99,7 @@
       <input id="searchInput" type="search" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Search for a word or phrase">
       <button type="button" id="searchClose" class="text-btn">Cancel</button>
     </form>
+    <div id="searchSuggest" class="search-suggest" hidden></div>
     <div id="searchStatus" class="search-status"></div>
     <div id="searchResults" class="search-results"></div>
   </section>
@@ -139,12 +147,14 @@
       <h3>Picking verses</h3>
       <ul>
         <li><b>Hold</b> a verse to pick it. <b>Tap</b> another verse to stretch the pick to it; tap the first or last verse to let it go.</li>
+        <li>To pick <b>just some words</b>, hold a word, then slide your finger to the last word you want without lifting it, like selecting in a Kindle. It can run into the next verses. Tap anywhere to let the words go.</li>
         <li>The bar at the bottom then offers <b>Note</b>, <b>Bookmark</b>, <b>Copy</b>, <b>Compare</b> (the verses in every translation; tap one to switch to it) and <b>Related</b> (other passages on the same things, with their words). ✕ puts the pick away.</li>
       </ul>
       <h3>Notes</h3>
       <ul>
         <li>Pick verses and tap <b>Note</b>. Choose who sees it: <b>Just me</b>, or one of your groups.</li>
         <li>Verses with notes are shaded. Pick one and the bar shows how many notes are on it.</li>
+        <li>A note on picked words shades just those words, and shows them in quotes. In another translation the whole verse is shaded instead.</li>
         <li>On group notes you can <b>Reply</b>. On your own notes: <b>Edit</b>, <b>Change verses</b> or <b>Delete</b>.</li>
         <li>Each group on the Connection tab lists all its notes; scroll the box to see older ones. Tap a note to go to its verses, or hold it to reply (or to edit or delete your own).</li>
         <li>Your Just-me notes are also listed at the bottom of the Bookmarks tab.</li>
@@ -157,7 +167,14 @@
       </ul>
       <h3>Search and going to a verse</h3>
       <ul>
-        <li>Tap the <b>magnifying glass</b> and type words or a phrase; close matches show too.</li>
+        <li>Tap the <b>magnifying glass</b> and type words or a phrase; close matches show too. Words to finish what you're typing show under the box.</li>
+        <li>Misspellings are fixed for you ("rightousness" finds <b>righteousness</b>); tap <b>Search for … instead</b> to keep your spelling. A word finds its other forms too: <b>knows</b> finds "knoweth", <b>says</b> finds "saith".</li>
+        <li>Verses worded your way in another translation on this device show too, marked with that translation.</li>
+        <li>Above the verses: your own <b>notes and bookmarks</b>, <b>topics</b> (try <b>prayer</b> or <b>forgiveness</b>), <b>people and places</b> (<b>Barnabas</b>, <b>Bethel</b>), and <b>Hebrew and Greek words</b> (<b>agape</b>, <b>chesed</b>, or a Strong's number like <b>G26</b>). Tap one for all its verses.</li>
+        <li>The chips narrow the verses to the Old or New Testament, the Gospels, the Letters or the book you're reading; the row under them counts the verses in each book: tap one to see only those.</li>
+        <li><b>"Quotes"</b> keep words exactly as typed, a minus leaves a word out (<b>love -money</b>), and <b>*</b> stands for any letters (<b>*loved</b> finds "beloved").</li>
+        <li>After opening a result, the bar at the bottom goes to the <b>next</b> or <b>previous</b> one, and the words you searched for stay lit. Tap its middle to see the list again; ✕ puts it away.</li>
+        <li>With the box empty, your <b>recent searches</b> are there to tap again.</li>
         <li>Or type a reference, like <b>jn 3:16</b>, <b>1 cor 13</b> or <b>Ps 23</b>, to go straight there.</li>
         <li>After jumping somewhere (search, a bookmark, a note), <b>‹ Back to…</b> at the top takes you back to where you were reading.</li>
       </ul>

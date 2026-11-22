@@ -218,6 +218,8 @@ const els = {
 function escapeHTML(text) {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
+// A verse's words each in a span, so a finger can pick some of them and notes and search can light them up.
+const wordSpans = (text) => text.split(/(\s+)/).map((t, i) => i % 2 || !t ? t : `<span class="w">${escapeHTML(t)}</span>`).join("");
 
 /* ---------- Offline licensed copies ---------- */
 
@@ -534,7 +536,7 @@ async function render({ restoreVerse = state.verse } = {}) {
     html = (era ? `<p class="era">Chronological · ${escapeHTML(era)}</p>` : "") +
       `<h2>${escapeHTML(label)}</h2>` + listenButton() + (notes ? aboutSection(notes, here) : "") +
       verses.map((text, i) => !text || !inPassage(here, i + 1) ? "" :
-        `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${escapeHTML(text)}` +
+        `<p class="verse" id="v${i + 1}" data-verse="${i + 1}"><sup>${i + 1}</sup>${wordSpans(text)}` +
         (notes?.verses[`${state.chapter + 1}:${i + 1}`] ? noteMark(i + 1, notes.verses[`${state.chapter + 1}:${i + 1}`]) : "") + `</p>`
       ).join("") +
       (state.translation === "ESV" ? `<p class="copyright">${ESV_COPYRIGHT}</p>` : "") +
@@ -660,6 +662,7 @@ els.chapter.addEventListener("click", (event) => {
   if (verse) {
     if (heldVerse) return void (heldVerse = false);   // a long press already picked it
     const number = Number(verse.dataset.verse);
+    if (selection?.words) return clearSelection();   // a tap lets picked words go
     if (selection) return stretchSelection(number);
     if (followingHere()) return void jumpToVerse(number);
     const hints = store.get("pickHints", 0);   // remind a few times how to pick verses
@@ -832,21 +835,69 @@ async function jumpToVerse(verse) {
 }
 
 let heldVerse = false, holdTimer = null, holdStart = null;   // holdStart: [x, y, the finger or pointer holding]
+// After the hold, sliding the finger picks words, like selecting text in a Kindle: from the word first held
+// to the word under the finger, across verses too. Lifting without sliding keeps the whole verse.
+let drag = null;   // { verse, word, x, y, scroll: -1 | 0 | 1, timer }
 els.chapter.addEventListener("pointerdown", (event) => {
   const verse = event.target.closest(".verse");
   heldVerse = false;
   if (!verse) return;
   holdStart = [event.clientX, event.clientY, event.pointerId];
+  const word = event.target.closest(".w");
   holdTimer = setTimeout(() => {
     heldVerse = true;
+    swipe.id = null;   // the finger picks now; it doesn't turn the page
     const number = Number(verse.dataset.verse);
     pick(number, number);   // a new pick (while changing a note's verses, it starts over there)
+    if (selection.changing) return;
+    drag = { verse: number, word: word ? wordsOf(number).indexOf(word) : 0, x: holdStart[0], y: holdStart[1], scroll: 0 };
+    drag.timer = setInterval(dragScroll, 30);
   }, 500);
 });
 els.chapter.addEventListener("pointermove", (event) => {
+  if (drag && event.pointerType !== "touch") return dragTo(event.clientX, event.clientY);
   if (holdTimer && event.pointerId === holdStart[2] && Math.hypot(event.clientX - holdStart[0], event.clientY - holdStart[1]) > 10) clearTimeout(holdTimer);
 });
-for (const type of ["pointerup", "pointercancel"]) els.chapter.addEventListener(type, () => clearTimeout(holdTimer));
+// A finger is followed through touch events: once it picks words the page mustn't scroll or turn under it.
+els.chapter.addEventListener("touchmove", (event) => {
+  if (!drag) return;
+  event.preventDefault();
+  dragTo(event.touches[0].clientX, event.touches[0].clientY);
+}, { passive: false });
+for (const type of ["pointerup", "pointercancel"]) els.chapter.addEventListener(type, () => { clearTimeout(holdTimer); if (drag?.moved || type === "pointerup") endDrag(); });
+els.chapter.addEventListener("touchend", endDrag);
+
+const wordsOf = (verse) => [...($(`v${verse}`)?.querySelectorAll(".w") ?? [])];
+function dragTo(x, y) {
+  if (!drag) return;
+  if (!drag.moved && Math.hypot(x - holdStart[0], y - holdStart[1]) < 8) return;
+  drag.moved = true;
+  Object.assign(drag, { x, y });
+  // Near the top or bottom of the screen the page creeps along, so a pick can run past what's showing.
+  const view = els.bibleView.getBoundingClientRect();
+  drag.scroll = y < view.top + 50 ? -1 : y > Math.min(view.bottom, bar.getBoundingClientRect().top || view.bottom) - 50 ? 1 : 0;
+  const word = document.elementFromPoint(x, y)?.closest(".w");
+  const verse = word?.closest(".verse");
+  if (!verse || !els.chapter.contains(verse)) return;
+  const at = [Number(verse.dataset.verse), wordsOf(Number(verse.dataset.verse)).indexOf(word)];
+  const anchor = [drag.verse, drag.word];
+  const [a, z] = at[0] < anchor[0] || at[0] === anchor[0] && at[1] < anchor[1] ? [at, anchor] : [anchor, at];
+  selection = { book: state.book, chapter: state.chapter, start: a[0], end: z[0], words: { from: a[1], to: z[1] } };
+  showSelection();
+}
+function dragScroll() {
+  if (!drag?.scroll) return;
+  els.bibleView.scrollTop += drag.scroll * 6;
+  dragTo(drag.x, drag.y);
+}
+function endDrag() {
+  if (!drag) return;
+  clearInterval(drag.timer);
+  drag = null;
+  // Every word of the verses is just the verses.
+  const w = selection?.words;
+  if (w && w.from === 0 && w.to === wordsOf(selection.end).length - 1) { delete selection.words; showSelection(); }
+}
 els.chapter.addEventListener("contextmenu", (event) => { if (event.target.closest(".verse")) event.preventDefault(); });
 window.addEventListener("bible:rendered", () => { listening.verse = 0; if (listening.book !== null) followAlong(); });
 
@@ -892,13 +943,27 @@ function clearSelection() {
   showSelection();
 }
 
+// The spans of the words picked: from word `from` of verse `start` to word `to` of verse `end`.
+function pickedWords({ start, end, words }) {
+  const spans = [];
+  for (let v = start; v <= end; v++) {
+    const all = wordsOf(v);
+    spans.push(...all.slice(v === start ? words.from : 0, v === end ? words.to + 1 : all.length));
+  }
+  return spans;
+}
+// The words as one quotation, without the punctuation at either end.
+const quoteOf = (s) => pickedWords(s).map((w) => w.textContent).join(" ").replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}?!]+$/gu, "");
+
 function showSelection() {
   els.chapter.querySelectorAll(".verse.picked").forEach((v) => v.classList.remove("picked"));
+  els.chapter.querySelectorAll(".w.picked").forEach((w) => w.classList.remove("picked"));
   document.body.classList.toggle("picking", !!selection);
   bar.hidden = !selection;
   if (!selection) return;
-  for (let v = selection.start; v <= selection.end; v++) $(`v${v}`)?.classList.add("picked");
-  const ref = escapeHTML(pickRef(selection, bookName(selection.book)));
+  if (selection.words) pickedWords(selection).forEach((w) => w.classList.add("picked"));
+  else for (let v = selection.start; v <= selection.end; v++) $(`v${v}`)?.classList.add("picked");
+  const ref = escapeHTML(pickRef(selection, bookName(selection.book)) + (selection.words ? ` · “${quoteOf(selection)}”` : ""));
   if (selection.changing) {
     bar.innerHTML = `<div class="bar-ref">${escapeHTML(selection.changing.label)}: ${ref}</div>` +
       `<div class="bar-actions"><button data-act="cancel">Cancel</button><button data-act="save" class="bar-main">Save verses</button></div>`;
@@ -916,9 +981,10 @@ bar.addEventListener("click", (event) => {
   const s = selection;
   if (!act || !s) return;
   if (act === "copy") return copyVerses(s);
+  const words = s.words && { translation: state.translation, from: s.words.from, to: s.words.to, quote: quoteOf(s) };
   clearSelection();
   if (act === "save") s.changing.save(s.start, s.end);
-  else if (act === "note") emit("notes", { book: s.book, chapter: s.chapter, verse: s.start, verseEnd: s.end });
+  else if (act === "note") emit("notes", { book: s.book, chapter: s.chapter, verse: s.start, verseEnd: s.end, words });
   else if (act === "bookmark") openBookmarkDialog("new", s);
   else if (act === "compare") openCompare(s);
   else if (act === "related") openRelated(s);
@@ -943,7 +1009,8 @@ function changeVerses(item, label, save) {
 }
 
 // The words of a verse, without its number.
-const verseText = (el) => [...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join("");
+const verseText = (el) => [...el.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE || n.classList?.contains("w"))
+  .map((n) => n.textContent).join("").trim();
 
 function copyVerses(s) {
   const several = s.end > s.start;
@@ -952,7 +1019,7 @@ function copyVerses(s) {
     const el = $(`v${v}`);
     if (el) parts.push((several ? `${v} ` : "") + verseText(el));
   }
-  const text = `${parts.join(" ")}\n— ${pickRef(s, bookName(s.book))} (${state.translation})`;
+  const text = `${s.words ? `“${quoteOf(s)}”` : parts.join(" ")}\n— ${pickRef(s, bookName(s.book))} (${state.translation})`;
   const done = () => { toast(`Copied ${pickRef(s, bookName(s.book))}`); clearSelection(); };
   const fallback = () => copyTheOldWay(text) ? done() : toast("Couldn't copy on this device.");
   // The clipboard call has to start right away, within the tap.
@@ -1339,6 +1406,12 @@ els.settings.addEventListener("close", () => {
 
 /* ---------- Search ---------- */
 
+// Search looks for the words in the translation on screen, and in the other translations kept on this
+// device for verses worded differently there. A misspelled word is corrected from the words the Bible
+// uses, and a word also finds its other forms ("knows" finds "knoweth"). Above the verses: your own notes
+// and bookmarks, topics (Nave's Topical Bible, public domain), people and places, and Hebrew and Greek
+// words (STEPBible.org, CC BY 4.0; tools/search_data.py). Quotes keep words exactly as typed, a minus
+// leaves a word out, and * stands for any letters.
 const PAGE = 100;
 const search = { query: "", results: [], shown: 0, token: 0, esvPage: 0, esvTotal: 0, exact: null, words: null };
 
@@ -1349,23 +1422,149 @@ const STOP_WORDS = new Set(("a an and are as at be but by for from he her him hi
   "и в во не на я что он с со а как к ко по но его от о об у же бы то же ли ни да за из ее её их мы вы ты").split(" "));
 
 // Words in any alphabet (Latin or Cyrillic); \b and \w only understand Latin letters.
-const queryWords = (query) => query.toLowerCase().replace(/[’‘]/g, "'").match(/[\p{L}\p{N}']+/gu) ?? [];
+const queryWords = (query) => (query.toLowerCase().replace(/[’‘]/g, "'").match(/[\p{L}\p{N}'*]+/gu) ?? []).filter((w) => w !== "*");
 const WORD_START = "(?<![\\p{L}\\p{N}])";
 const BETWEEN_WORDS = "[^\\p{L}\\p{N}]+";
-// Each word matches from its start, so "love" also finds "loved" and "loveth" (but not "beloved").
-const wordPattern = (w) => w.replace(/'/g, "['’]");
+// Each word matches from its start, so "love" also finds "loved" and "loveth" (but not "beloved"); * is any letters.
+const wordPattern = (w) => w.replace(/'/g, "['’]").replace(/\*/g, "[\\p{L}\\p{N}'’]*");
 
-// "god so love" -> matches "God so loved", ignoring case and punctuation between words.
-function searchPattern(query) {
-  const words = queryWords(query);
-  return words.length ? new RegExp(`${WORD_START}${words.map(wordPattern).join(BETWEEN_WORDS)}`, "giu") : null;
+// Today's words and the KJV's for the same thing, so a search in either finds both.
+const WORD_FORMS = Object.fromEntries(("say:saith,sayest says:say,saith said:saidst show:shew shows:shew,sheweth " +
+  "showed:shewed shown:shewn,shewed has:hath,hast have:hast,hath does:doth,doeth do:dost,doth,doeth did:didst " +
+  "you:ye,thee,thou your:thy,thine yours:thine are:art were:wast,wert will:wilt shall:shalt can:canst " +
+  "spoke:spake knew:knewest goes:goeth go:goest,goeth sees:seeth").split(" ").map((pair) => {
+  const [word, forms] = pair.split(":");
+  return [word, forms.split(",")];
+}));
+
+// The forms a word is searched by: itself, the old or new form, and its stem when that's a word the Bible
+// uses ("knows" -> "know", "loving" -> "love", "carries" -> "carry"). A form that starts another one is
+// enough, since words match from their start.
+function wordForms(word, known = () => false) {
+  if (word.includes("*") || !/^[a-z']+$/.test(word)) return [word];
+  const forms = [word, ...(WORD_FORMS[word] ?? [])];
+  const stem = (s) => { if (s.length >= 3 && known(s)) forms.push(s); };
+  let m;
+  if ((m = word.match(/^(.+)ies$/))) stem(m[1] + "y");
+  else if ((m = word.match(/^(.+(?:sh|ch|x|z|ss))es$/))) stem(m[1]);
+  else if ((m = word.match(/^(.+[^s'])s$/))) stem(m[1]);
+  if ((m = word.match(/^(.{3,}?)(?:ing|ed|eth|est)$/))) {
+    stem(m[1] + "e");                                                        // loving, loved, loveth -> love
+    stem(/([^aeiou])\1$/.test(m[1]) ? m[1].slice(0, -1) : m[1]);            // running -> run, walking -> walk
+  }
+  return [...new Set(forms)].filter((f, _, all) => !all.some((g) => g !== f && f.startsWith(g)));
 }
 
+// Every word a translation uses, with how often: for correcting misspellings and suggesting words.
+const vocabularies = new WeakMap();   // books -> { count: Map(word -> times), sorted: [word] }
+function vocabulary(books) {
+  if (!vocabularies.has(books)) {
+    const count = new Map();
+    for (const b of books) for (const chapter of b.chapters) for (const text of chapter ?? []) {
+      for (const w of text?.toLowerCase().replace(/[’‘]/g, "'").match(/[\p{L}\p{N}']+/gu) ?? []) {
+        const word = w.replace(/^'+|'+$/g, "");
+        if (word) count.set(word, (count.get(word) ?? 0) + 1);
+      }
+    }
+    vocabularies.set(books, { count, sorted: [...count.keys()].sort() });
+  }
+  return vocabularies.get(books);
+}
+// Where words starting with `prefix` begin in a sorted list.
+function firstFrom(sorted, prefix) {
+  let lo = 0, hi = sorted.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (sorted[mid] < prefix) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+const hasPrefix = (vocab, prefix) => vocab.sorted[firstFrom(vocab.sorted, prefix)]?.startsWith(prefix) ?? false;
+
+// Letters added, dropped, changed or swapped to turn one word into the other; anything over `most` is most + 1.
+function distance(a, b, most) {
+  if (Math.abs(a.length - b.length) > most) return most + 1;
+  let before = null, prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    let least = i;
+    for (let j = 1; j <= b.length; j++) {
+      let d = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (before && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d = Math.min(d, before[j - 2] + 1);
+      row.push(d);
+      least = Math.min(least, d);
+    }
+    if (least > most) return most + 1;
+    [before, prev] = [prev, row];
+  }
+  return prev[b.length];
+}
+
+// The query with each word no translation here has (from its start) replaced by the nearest one that's
+// used most: "rightousness" -> "righteousness". Quoted words are left as typed.
+function fixSpelling(query, vocabs, known) {
+  const fix = (typed) => {
+    const word = typed.toLowerCase().replace(/[’‘]/g, "'");
+    if (word.length < 3 || word.includes("*") || /^\d+$/.test(word)) return typed;
+    if (vocabs.some((v) => wordForms(word, known).some((f) => hasPrefix(v, f)))) return typed;
+    const most = word.length <= 4 ? 1 : 2;
+    let best = null;
+    for (const { count } of vocabs) {
+      for (const [w, n] of count) {
+        if (Math.abs(w.length - word.length) > most) continue;
+        const d = distance(word, w, most);
+        if (d <= most && (!best || d < best.d || d === best.d && n > best.n)) best = { w, d, n };
+      }
+    }
+    return best?.w ?? typed;
+  };
+  return query.replace(/"[^"]*"?|[\p{L}\p{N}'’*]+/gu, (part) => part.startsWith('"') ? part : fix(part));
+}
+
+// The query as patterns: all of it in the order typed (an exact match), its meaningful words in any order
+// (a close match), quoted phrases a verse must have, and words it mustn't.
+function searchPlan(query, known) {
+  const tokens = [], phrases = [], excluded = [];   // tokens: [{ word, exactly }] in the order typed
+  for (const m of query.matchAll(/"([^"]*)"?|(-?)([^\s"]+)/g)) {
+    if (m[1] !== undefined) {
+      const words = queryWords(m[1]);
+      if (words.length) phrases.push(words);
+      tokens.push(...words.map((word) => ({ word, exactly: true })));
+    } else if (m[2]) excluded.push(...queryWords(m[3]));
+    else tokens.push(...queryWords(m[3]).map((word) => ({ word, exactly: false })));
+  }
+  if (!tokens.length) return null;
+  const term = ({ word, exactly }) => {
+    const forms = exactly ? [word] : wordForms(word, known);
+    return forms.length > 1 ? `(?:${forms.map(wordPattern).join("|")})` : wordPattern(forms[0]);
+  };
+  const keywords = [...new Map(tokens.filter((t) => !STOP_WORDS.has(t.word)).map((t) => [t.word, t])).values()];
+  return {
+    exact: new RegExp(WORD_START + tokens.map(term).join(BETWEEN_WORDS), "giu"),
+    keyPatterns: keywords.map((t) => new RegExp(WORD_START + term(t), "iu")),
+    needed: keywords.length < 2 ? Infinity : keywords.length === 2 ? 2 : Math.ceil(keywords.length * 0.6),
+    words: new RegExp(`${WORD_START}(?:${(keywords.length ? keywords : tokens).map(term).join("|")})`, "giu"),
+    must: phrases.map((p) => new RegExp(WORD_START + p.map(wordPattern).join(BETWEEN_WORDS), "iu")),
+    not: excluded.map((w) => new RegExp(WORD_START + wordPattern(w), "iu")),
+  };
+}
+
+// "exact", { score, span } for a close match (more words, closer together, is better), or null.
+function matchVerse(text, plan) {
+  if (plan.not.some((p) => p.test(text)) || !plan.must.every((p) => p.test(text))) return null;
+  plan.exact.lastIndex = 0;
+  if (plan.exact.test(text)) return "exact";
+  if (plan.needed === Infinity) return null;
+  const at = plan.keyPatterns.map((p) => text.search(p)).filter((i) => i >= 0);
+  return at.length >= plan.needed ? { score: at.length, span: Math.max(...at) - Math.min(...at) } : null;
+}
+
+// Marks whole words: "know" lights up all of "knoweth".
 function highlight(text, pattern) {
   let html = "", last = 0;
   for (const m of text.matchAll(pattern)) {
-    html += escapeHTML(text.slice(last, m.index)) + `<mark>${escapeHTML(m[0])}</mark>`;
-    last = m.index + m[0].length;
+    if (!m[0] || m.index < last) continue;
+    let end = m.index + m[0].length;
+    while (end < text.length && /[\p{L}\p{N}'’]/u.test(text[end])) end++;
+    html += escapeHTML(text.slice(last, m.index)) + `<mark>${escapeHTML(text.slice(m.index, end))}</mark>`;
+    last = end;
   }
   return html + escapeHTML(text.slice(last));
 }
@@ -1377,44 +1576,203 @@ async function bibleForSearch() {
   return null;   // ESV, NIV, NASB and NTV search online
 }
 
-async function runSearch(query) {
+// The other translations kept on this device, searched too for verses worded differently there.
+async function otherBibles(query) {
+  if (state.translation in BOOK_NAMES || /\p{Script=Cyrillic}/u.test(query)) return [];   // Russian and Spanish stand alone
+  const codes = ["GTB", "KJV", "WEB", "ASV", "NASB"].filter((c) => c !== state.translation && (c in BUNDLED || c === "KJV" || offline[c]));
+  const all = await Promise.all(codes.map(async (code) => ({ code,
+    books: code === "KJV" ? state.books : offline[code]?.books ?? await loadBundled(code).catch(() => null) })));
+  return all.filter((b) => b.books);
+}
+
+// Topics, names and Hebrew and Greek words, fetched the first time search opens (and kept offline by sw.js).
+const searchData = new Map();
+function loadSearchData(name) {
+  if (!searchData.has(name)) {
+    searchData.set(name, fetch(`search/${name}.json`).then((r) => r.json())
+      .catch((error) => { searchData.delete(name); throw error; }));
+  }
+  return searchData.get(name);
+}
+// The data counts verses straight through the KJV: Genesis 1:1 is 0, Revelation 22:21 is 31101.
+let chapterStarts = null;   // [[first verse's count, book, chapter]]
+function verseAt(id) {
+  if (!chapterStarts) {
+    let count = 0;
+    chapterStarts = state.books.flatMap((b, book) => b.chapters.map((verses, chapter) => {
+      const start = count;
+      count += verses.length;
+      return [start, book, chapter];
+    }));
+  }
+  let lo = 0, hi = chapterStarts.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (chapterStarts[mid][0] <= id) lo = mid; else hi = mid - 1; }
+  const [start, book, chapter] = chapterStarts[lo];
+  return { book, chapter, verse: id - start + 1 };
+}
+
+// Topics, people and places, and Hebrew and Greek words that go by what was typed (up to three words).
+async function cardsFor(query) {
+  const q = query.toLowerCase().trim().replace(/\s+/g, " ");
+  if (q.length < 2 || /["*]|(^|\s)-/.test(q) || q.split(" ").length > 3) return [];
+  const [topics, names, words] = await Promise.all(["topics", "names", "words"].map((n) => loadSearchData(n).catch(() => [])));
+  const near = (a, b) => a === b || b.length >= 5 && distance(a, b, 1) <= 1;
+  const cards = [];
+  const best = (list, score, most) => list.map((item, i) => ({ item, i, score: score(item) }))
+    .filter((x) => x.score < 9).sort((a, b) => a.score - b.score || b.item.at(-1).length - a.item.at(-1).length).slice(0, most);
+
+  for (const { item: [name, sections], i } of best(topics, ([name]) => {
+    const n = name.toLowerCase();
+    return n === q ? 0 : near(n, q) ? 1 : n.startsWith(`${q} `) || n.startsWith(`${q},`) ? 2 : 9;
+  }, 4)) {
+    const count = new Set(sections.flatMap(([, verses]) => verses)).size;
+    cards.push({ kind: "topic", i, title: name, sub: `Topic · ${count} verse${count === 1 ? "" : "s"}` });
+  }
+  for (const { item: [name, kind, brief, , verses], i } of best(names, ([name, , , others]) => {
+    const n = name.toLowerCase();
+    return n === q ? 0 : near(n, q) ? 1 : others.some((o) => o.toLowerCase() === q) ? 2 : 9;
+  }, 4)) {
+    cards.push({ kind: "name", i, title: name, sub: `${brief || (kind === "place" ? "A place" : "A person")} · ${verses.length} verse${verses.length === 1 ? "" : "s"}` });
+  }
+  const strong = q.match(/^([gh])\s*0*(\d{1,4})([a-z]?)$/);
+  const plainQ = q.replace(/[^a-z]/g, "");
+  for (const { item: [id, word, translit, meaning, verses], i } of best(words, ([id, , translit, meaning]) => {
+    if (strong) return id.toLowerCase().startsWith(strong[1] + strong[2].padStart(4, "0") + strong[3]) ? 0 : 9;
+    if (translit === plainQ) return 0;
+    if (plainQ.length >= 5 && distance(translit, plainQ, 1) <= 1) return 1;
+    const m = meaning.toLowerCase();
+    return !STOP_WORDS.has(q) && (m === q || m === `to ${q}`) ? 3 : 9;
+  }, 4)) {
+    const language = id.startsWith("H") ? "Hebrew" : "Greek";
+    cards.push({ kind: "word", i, title: `${translit} · ${word}`,
+      sub: `${language} for “${meaning}” · ${verses.length} verse${verses.length === 1 ? "" : "s"}` });
+  }
+  return cards;
+}
+
+// Your notes (from connect.js) and bookmarks with the words in them.
+function mineFor(plan) {
+  const has = (text) => {
+    if (!text) return false;
+    plan.exact.lastIndex = 0;
+    return plan.exact.test(text) || plan.keyPatterns.length > 0 && plan.keyPatterns.every((p) => p.test(text));
+  };
+  const found = [];
+  for (const b of state.bookmarks) {
+    const text = [b.name, b.notes].filter(Boolean).join(" — ");
+    if (has(text)) found.push({ book: b.book, chapter: b.chapter, verse: b.verse, verseEnd: b.verseEnd, text, mine: "Bookmark" });
+  }
+  for (const n of window.bible.myNotes?.() ?? []) {
+    if (has(`${n.quote ?? ""} ${n.text}`)) found.push({ book: n.book, chapter: n.chapter, verse: n.verse, verseEnd: n.verseEnd, text: n.text, mine: n.label });
+  }
+  return found;
+}
+
+// Recent searches, newest first, kept on this device.
+const recentSearches = () => store.get("recentSearches", []);
+function saveRecent(query) {
+  query = query.trim();
+  if (query.length >= 2) store.set("recentSearches", [query, ...recentSearches().filter((q) => q !== query)].slice(0, 10));
+}
+function showRecent() {
+  const list = recentSearches();
+  $("searchResults").innerHTML = list.length ? `<div class="results-label">Recent searches</div>` +
+    list.map((q) => `<button class="result recent" data-recent="${escapeHTML(q)}"><span class="recent-icon">↺</span> ${escapeHTML(q)}</button>`).join("") +
+    `<button class="more-btn" data-clear-recent>Clear recent searches</button>` : "";
+}
+
+// Words the Bible uses that start with what's being typed, most used first.
+async function showSuggestions() {
+  const box = $("searchSuggest");
+  const value = $("searchInput").value;
+  const m = value.match(/(?:^|\s)([\p{L}']{2,})$/u);
+  if (!m) return void (box.hidden = true);
+  const books = await bibleForSearch().catch(() => null) ?? state.books;
+  if (value !== $("searchInput").value) return;   // typed on meanwhile
+  const part = m[1].toLowerCase();
+  const { sorted, count } = vocabulary(books);
+  const found = [];
+  for (let i = firstFrom(sorted, part); i < sorted.length && sorted[i].startsWith(part); i++) if (sorted[i] !== part) found.push(sorted[i]);
+  const words = found.sort((a, b) => count.get(b) - count.get(a)).slice(0, 6);
+  box.innerHTML = words.map((w) => `<button type="button" data-word="${escapeHTML(w)}">${escapeHTML(w)}</button>`).join("");
+  box.hidden = !words.length;
+}
+$("searchSuggest").addEventListener("click", (event) => {
+  const word = event.target.closest("[data-word]")?.dataset.word;
+  if (!word) return;
+  const input = $("searchInput");
+  input.value = input.value.replace(/[\p{L}']+$/u, word) + " ";
+  $("searchSuggest").hidden = true;
+  input.focus();
+  clearTimeout(searchTimer);
+  runSearch(input.value);
+});
+
+// Which verses the chips show.
+const GROUPS = { ot: [0, 38], nt: [39, 65], gospels: [39, 42], letters: [44, 64] };
+const inGroup = (r, filter) => filter === "all" || (filter === "here" ? r.book === state.book : r.book >= GROUPS[filter][0] && r.book <= GROUPS[filter][1]);
+const visibleResults = () => search.results.filter((r) => inGroup(r, search.filter) && (search.book === null || r.book === search.book));
+
+async function runSearch(query, { literal = false } = {}) {
   const token = ++search.token;
-  Object.assign(search, { query: query.trim(), translation: state.translation, results: [], shown: 0, esvPage: 0, esvTotal: 0, nivOffset: 0, nivTotal: 0 });
+  Object.assign(search, { query: query.trim(), translation: state.translation, results: [], shown: 0, esvPage: 0, esvTotal: 0,
+    nivOffset: 0, nivTotal: 0, filter: "all", book: null, detail: null, fixed: null, cards: [], mine: [], top: "", apiQuery: null, status: "" });
   $("searchResults").innerHTML = "";
   $("searchStatus").textContent = "";
-  if (search.query.length < 2) return;
+  if (search.query.length < 2) return showRecent();
   // "jn 3:16" or "1 cor 13" goes there; a book's name alone ("Job") offers it above the word matches.
   const ref = parseReference(search.query);
   if (ref) {
-    $("searchResults").innerHTML = `<button class="result go-ref" data-go="${ref.book},${ref.chapter},${ref.verse},${ref.verseEnd}">` +
+    search.top = `<button class="result go-ref" data-go="${ref.book},${ref.chapter},${ref.verse},${ref.verseEnd}">` +
       `<div class="ref">Go to ${escapeHTML(refLabel(ref))}</div></button>`;
+    $("searchResults").innerHTML = search.top;
     if (ref.typedChapter) return;
   }
-  search.exact = searchPattern(search.query);
-  if (!search.exact) return;
 
-  const books = await bibleForSearch().catch(() => null);
+  const [books, others] = await Promise.all([bibleForSearch().catch(() => null), otherBibles(search.query)]);
   if (token !== search.token) return;
-  if (!books) return isApiTranslation(state.translation) ? runApiSearch(token) : runEsvSearch(token);
+  // Spelling is checked against English words only for an English translation (the Russian against its own).
+  const english = !(state.translation in BOOK_NAMES);
+  const vocabs = [...new Set(english ? [books, state.books, ...others.map((o) => o.books)] : [books])].filter(Boolean).map(vocabulary);
+  const known = (w) => vocabs.some((v) => v.count.has(w));
+  let q = search.query;
+  if (!literal) {
+    const fixed = fixSpelling(q, vocabs, known);
+    if (fixed.toLowerCase() !== q.toLowerCase()) [search.fixed, q] = [{ from: q, to: fixed }, fixed];
+  }
+  const plan = searchPlan(q, known);
+  if (!plan) return;
+  Object.assign(search, { plan, exact: plan.exact, words: plan.words, books: books ?? state.books, mine: mineFor(plan) });
+  search.cards = english ? await cardsFor(q) : [];
+  if (token !== search.token) return;
+  if (!books) {
+    search.apiQuery = q;
+    renderResults();
+    return isApiTranslation(state.translation) ? runApiSearch(token) : runEsvSearch(token);
+  }
 
-  // Close matches: verses with most of the meaningful words, in any order and with any wording between.
-  const keywords = [...new Set(queryWords(search.query).filter((w) => !STOP_WORDS.has(w)))];
-  const keyPatterns = keywords.map((w) => new RegExp(`${WORD_START}${wordPattern(w)}`, "iu"));
-  const needed = keywords.length < 2 ? Infinity : keywords.length === 2 ? 2 : Math.ceil(keywords.length * 0.6);
-  search.words = keywords.length ? new RegExp(`${WORD_START}(?:${keywords.map(wordPattern).join("|")})`, "giu") : null;
-
-  const exact = [], close = [];
+  const exact = [], close = [], found = new Set();
   books.forEach((b, bi) => b.chapters.forEach((chapter, ci) => chapter.forEach((text, vi) => {
     if (!text) return;
+    const match = matchVerse(text, plan);
+    if (!match) return;
     const hit = { book: bi, chapter: ci, verse: vi + 1, text };
-    search.exact.lastIndex = 0;
-    if (search.exact.test(text)) return exact.push(hit);
-    if (needed === Infinity) return;
-    const at = keyPatterns.map((p) => text.search(p)).filter((i) => i >= 0);
-    // Rank by how many words match, then by how close together they are.
-    if (at.length >= needed) close.push({ ...hit, score: at.length, span: Math.max(...at) - Math.min(...at), close: true });
+    if (match === "exact") { exact.push(hit); found.add(`${bi},${ci},${vi + 1}`); }
+    else close.push({ ...hit, ...match, close: true });
   })));
   close.sort((a, b) => b.score - a.score || a.span - b.span);
+
+  // Verses worded this way in another translation here, but not in this one.
+  const also = new Map();
+  for (const { code, books: theirs } of others) {
+    theirs.forEach((b, bi) => b.chapters.forEach((chapter, ci) => chapter?.forEach((text, vi) => {
+      const key = `${bi},${ci},${vi + 1}`;
+      if (!text || found.has(key) || matchVerse(text, plan) !== "exact") return;
+      if (also.has(key)) also.get(key).also.push(code);
+      else also.set(key, { book: bi, chapter: ci, verse: vi + 1, text, also: [code] });
+    })));
+  }
+  const elsewhere = [...also.values()].sort((a, b) => a.book - b.book || a.chapter - b.chapter || a.verse - b.verse);
 
   // Our translation's notes are searched too, so "hesed" or "agape" finds every note on the word.
   const inNotes = [];
@@ -1422,19 +1780,59 @@ async function runSearch(query) {
     const all = await Promise.all(state.books.map((_, b) => notesFor(b).catch(() => null)));
     if (token !== search.token) return;
     all.forEach((notes, b) => Object.entries(notes?.verses ?? {}).forEach(([key, list]) => list.forEach((note) => {
-      search.exact.lastIndex = 0;
-      if (!search.exact.test(note.t)) return;
+      if (matchVerse(note.t, plan) !== "exact") return;
       const [c, v] = key.split(":").map(Number);
       inNotes.push({ book: b, chapter: c - 1, verse: v, text: note.t, note: true });
     })));
   }
-  search.results = [...exact, ...inNotes, ...close.slice(0, 300)];
+  search.results = [...exact, ...inNotes, ...elsewhere, ...close.slice(0, 300)];
 
   const count = (n, what) => `${n ? n.toLocaleString() : "No"} ${what}${n === 1 ? "" : "es"}`;
-  $("searchStatus").textContent = exact.length || close.length || inNotes.length
+  search.status = exact.length || close.length || inNotes.length || elsewhere.length
     ? `${count(exact.length, "exact match")}${close.length ? ` · ${count(close.length, "close match")}` : ""} in the ${state.translation}` +
-      (inNotes.length ? ` · ${inNotes.length.toLocaleString()} in the notes` : "")
+      (inNotes.length ? ` · ${inNotes.length.toLocaleString()} in the notes` : "") +
+      (elsewhere.length ? ` · ${elsewhere.length.toLocaleString()} in other translations` : "")
     : `Nothing found in the ${state.translation}`;
+  renderResults();
+}
+
+function showStatus(text) {
+  search.status = text;
+  $("searchStatus").innerHTML = (search.fixed ? `Showing results for “${escapeHTML(search.fixed.to)}”. ` +
+    `<button class="link-btn inline" data-literal>Search for “${escapeHTML(search.fixed.from)}” instead</button><br>` : "") + escapeHTML(text);
+}
+
+// Your notes and bookmarks, the topic, name and word cards, the chips, then the verses page by page.
+function renderResults() {
+  if (search.status) showStatus(search.status);
+  const card = (c) => `<button class="result card-result" data-detail="${c.kind}:${c.i}"><div class="ref">${escapeHTML(c.title)} ›</div>` +
+    `<div class="card-sub">${escapeHTML(c.sub)}</div></button>`;
+  const section = (label, kind) => {
+    const cards = search.cards.filter((c) => c.kind === kind);
+    return cards.length ? `<div class="results-label">${label}</div>` + cards.map(card).join("") : "";
+  };
+  let html = search.top +
+    (search.mine.length ? `<div class="results-label">Your notes and bookmarks</div>` + search.mine.map((r) =>
+      `<button class="result" data-go="${r.book},${r.chapter},${r.verse},${r.verseEnd ?? r.verse}">` +
+      `<div class="ref">${escapeHTML(verseRef({ ...r, verseEnd: r.verseEnd ?? r.verse }, bookName(r.book)))} · ${escapeHTML(r.mine)}</div>` +
+      `<div class="snippet plain">${highlight(r.text, search.words)}</div></button>`).join("") : "") +
+    section("Topics", "topic") + section("People and places", "name") + section("Hebrew and Greek words", "word");
+
+  // Chips for part of the Bible, then a strip of the books with results (tap one to see only its verses).
+  const local = !search.apiQuery;
+  if (search.results.length || !local) {
+    const chips = [["all", "All"], ["ot", "Old Testament"], ["nt", "New Testament"], ["gospels", "Gospels"], ["letters", "Letters"], ["here", bookName(state.book)]];
+    html += `<div class="chips">` + chips.map(([f, label]) =>
+      `<button class="chip${search.filter === f ? " on" : ""}" data-filter="${f}">${escapeHTML(label)}</button>`).join("") + `</div>`;
+    const perBook = new Map();
+    for (const r of search.results) if (inGroup(r, search.filter)) perBook.set(r.book, (perBook.get(r.book) ?? 0) + 1);
+    if (local && perBook.size > 1) {
+      html += `<div class="chips book-strip">` + [...perBook].sort((a, b) => a[0] - b[0]).map(([b, n]) =>
+        `<button class="chip${search.book === b ? " on" : ""}" data-book="${b}">${escapeHTML(bookName(b))} <b>${n}</b></button>`).join("") + `</div>`;
+    }
+  }
+  $("searchResults").innerHTML = html + `<div id="resultList"></div>`;
+  search.shown = 0;
   showMore();
 }
 
@@ -1447,34 +1845,79 @@ function excerpt(text) {
   return (from > 0 ? "… " : "") + text.slice(from, to < 0 ? text.length : to).trim() + (to > 0 ? " …" : "");
 }
 function showMore() {
+  if (!$("resultList")) return;   // a topic or word is open instead
+  const list = visibleResults();
   const start = search.shown;
-  const next = search.results.slice(start, start + PAGE);
+  const next = list.slice(start, start + PAGE);
   search.shown += next.length;
   document.querySelector("#searchResults .more-btn")?.remove();
   let html = "";
   next.forEach((r, i) => {
-    const previous = search.results[start + i - 1];
-    if (start + i === 0 && !r.close && !r.note) html += `<div class="results-label">Exact matches</div>`;
+    const previous = list[start + i - 1];
+    if (start + i === 0 && !r.close && !r.note && !r.also) html += `<div class="results-label">${search.apiQuery ? "Verses" : "Exact matches"}</div>`;
     if (r.note && !previous?.note) html += `<div class="results-label">In the translation notes</div>`;
+    if (r.also && !previous?.also) html += `<div class="results-label">Worded this way in other translations</div>`;
     if (r.close && !previous?.close) html += `<div class="results-label">Close matches</div>`;
-    html += `<button class="result" data-go="${r.book},${r.chapter},${r.verse}">` +
-      `<div class="ref">${escapeHTML(`${bookName(r.book)} ${r.chapter + 1}:${r.verse}`)}${r.note ? " · note" : ""}</div>` +
+    html += `<button class="result" data-at="${start + i}">` +
+      `<div class="ref">${escapeHTML(`${bookName(r.book)} ${r.chapter + 1}:${r.verse}`)}${r.note ? " · note" : ""}${r.also ? ` · in the ${r.also.join(", ")}` : ""}</div>` +
       `<div class="snippet">${highlight(r.note ? excerpt(r.text) : r.text, r.close ? search.words : search.exact)}</div></button>`;
   });
-  if (search.shown < search.results.length || search.esvPage < search.esvTotal || search.nivOffset < search.nivTotal) {
+  if (!list.length && search.results.length) html += `<p class="list-empty">No verses here. Try another part of the Bible.</p>`;
+  if (search.shown < list.length || search.esvPage < search.esvTotal || search.nivOffset < search.nivTotal) {
     html += `<button class="more-btn" data-more>Show more</button>`;
   }
-  $("searchResults").insertAdjacentHTML("beforeend", html);
+  $("resultList").insertAdjacentHTML("beforeend", html);
+}
+
+// A topic, a person or place, or a Hebrew or Greek word: what it is and all its verses, in sections for topics.
+async function openDetail(kind, i) {
+  const data = await loadSearchData({ topic: "topics", name: "names", word: "words" }[kind]);
+  const item = data[i];
+  let title, about = "", sections;
+  let credit = `From <a href="https://www.stepbible.org" target="_blank" rel="noopener">STEPBible.org</a> (CC BY 4.0), Tyndale House, Cambridge.`;
+  if (kind === "topic") {
+    [title] = item;
+    sections = item[1].map(([heading, verses]) => [heading, verses]);
+    credit = "From Nave's Topical Bible (public domain).";
+  } else if (kind === "name") {
+    const [name, what, brief, others, verses] = item;
+    title = name;
+    about = [brief || (what === "place" ? "A place." : "A person."), others.length ? `Also called ${others.join(", ")}.` : ""].join(" ");
+    sections = [["", verses]];
+  } else {
+    const [id, word, translit, meaning, verses] = item;
+    title = `${translit} · ${word}`;
+    about = `${id.startsWith("H") ? "Hebrew" : "Greek"} for “${meaning}” (Strong's ${id.replace(/^([GH])0*/, "$1")}). ` +
+      "Every verse with this word in the original.";
+    sections = [["", verses]];
+  }
+  const list = [];
+  let html = `<button class="link-btn back-to-results" data-back>‹ All results</button>` +
+    `<div class="detail-head"><h3>${escapeHTML(title)}</h3>${about ? `<p>${escapeHTML(about)}</p>` : ""}<p class="related-credit">${credit}</p>` +
+    (search.books === state.books && state.translation !== "KJV" ? `<p>Verses shown in the KJV.</p>` : "") + `</div>`;
+  for (const [heading, verses] of sections) {
+    if (heading) html += `<div class="results-label">${escapeHTML(heading)}</div>`;
+    for (const id of verses) {
+      const r = verseAt(id);
+      const text = search.books[r.book]?.chapters[r.chapter]?.[r.verse - 1] ?? "";
+      html += `<button class="result" data-at="${list.length}"><div class="ref">${escapeHTML(`${bookName(r.book)} ${r.chapter + 1}:${r.verse}`)}</div>` +
+        `<div class="snippet">${escapeHTML(text)}</div></button>`;
+      list.push(r);
+    }
+  }
+  search.detail = { title, list };
+  $("searchResults").innerHTML = html;
+  $("search").scrollTop = 0;
 }
 
 // API.Bible's search matches the words (with some spelling tolerance) and ranks by relevance.
 async function runApiSearch(token, offset = 0) {
   const code = state.translation;
-  if (offset === 0) $("searchStatus").textContent = `Searching the ${code}…`;
+  if (offset === 0) showStatus(`Searching the ${code}…`);
   try {
-    const data = await apiBible(`/bibles/${await apiBibleId(code)}/search`, { query: search.query, limit: PAGE, offset }, code);
+    const data = await apiBible(`/bibles/${await apiBibleId(code)}/search`, { query: search.apiQuery, limit: PAGE, offset }, code);
     if (token !== search.token) return;
-    search.exact = search.words = new RegExp(`${WORD_START}(?:${queryWords(search.query).map(wordPattern).join("|")})`, "giu");
+    search.exact = search.words = new RegExp(`${WORD_START}(?:${queryWords(search.apiQuery).map(wordPattern).join("|")})`, "giu");
     for (const v of data.verses ?? []) {
       const [code, c, verse] = v.id.split(".");
       const book = BOOK_CODES.indexOf(code);
@@ -1483,10 +1926,10 @@ async function runApiSearch(token, offset = 0) {
     search.nivOffset = offset + PAGE;
     search.nivTotal = data.total ?? 0;
     const n = search.nivTotal;
-    $("searchStatus").textContent = n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ${code}` : `Nothing found in the ${code}`;
+    showStatus(n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ${code}` : `Nothing found in the ${code}`);
     showMore();
   } catch (error) {
-    if (token === search.token) $("searchStatus").textContent = error.message;
+    if (token === search.token) showStatus(error.message);
   }
 }
 
@@ -1494,10 +1937,10 @@ const ESV_BOOK_NAMES = { Psalm: "Psalms" };
 
 async function runEsvSearch(token, page = 1) {
   const key = state.esvKey.trim() || state.sharedEsvKey;
-  if (!key) { $("searchStatus").textContent = "Sign in on the Connection tab to search the ESV."; return; }
-  if (page === 1) $("searchStatus").textContent = "Searching the ESV…";
+  if (!key) return showStatus("Sign in on the Connection tab to search the ESV.");
+  if (page === 1) showStatus("Searching the ESV…");
   try {
-    const params = new URLSearchParams({ q: search.query, "page-size": PAGE, page });
+    const params = new URLSearchParams({ q: search.apiQuery, "page-size": PAGE, page });
     const response = await fetch(`https://api.esv.org/v3/passage/search/?${params}`, { headers: { Authorization: `Token ${key}` } });
     if (!response.ok) throw new Error();
     const data = await response.json();
@@ -1505,7 +1948,7 @@ async function runEsvSearch(token, page = 1) {
     search.esvPage = data.page;
     search.esvTotal = data.total_pages;
     // ESV's search matches all the words, so mark them one by one.
-    search.exact = search.words = new RegExp(`${WORD_START}(?:${queryWords(search.query).map(wordPattern).join("|")})`, "giu");
+    search.exact = search.words = new RegExp(`${WORD_START}(?:${queryWords(search.apiQuery).map(wordPattern).join("|")})`, "giu");
     for (const r of data.results) {
       // "John 3:16", or "Jude 5" in one-chapter books
       const m = r.reference.match(/^(.+?) (?:(\d+):)?(\d+)/);
@@ -1513,10 +1956,10 @@ async function runEsvSearch(token, page = 1) {
       if (book >= 0) search.results.push({ book, chapter: Number(m[2] ?? 1) - 1, verse: Number(m[3]), text: r.content });
     }
     const n = data.total_results;
-    $("searchStatus").textContent = n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ESV` : "Nothing found in the ESV";
+    showStatus(n ? `${n.toLocaleString()} verse${n === 1 ? "" : "s"} in the ESV` : "Nothing found in the ESV");
     showMore();
   } catch {
-    if (token === search.token) $("searchStatus").textContent = "Couldn't reach the ESV. Searching the ESV needs an internet connection.";
+    if (token === search.token) showStatus("Couldn't reach the ESV. Searching the ESV needs an internet connection.");
   }
 }
 
@@ -1526,38 +1969,125 @@ function openSearch() {
   $("searchInput").placeholder = `Search the ${state.translation}`;
   // Results from another translation are stale: search again in this one.
   if (search.query && search.translation !== state.translation) runSearch($("searchInput").value);
+  else if (!$("searchInput").value.trim()) showRecent();
   $("searchInput").focus();
   $("searchInput").select();
+  ["topics", "names", "words"].forEach((name) => loadSearchData(name).catch(() => {}));   // ready by the first word
+  otherBibles("");
 }
 const closeSearch = () => { $("search").hidden = true; };
 
 let searchTimer;
 $("searchInput").addEventListener("input", () => {
   clearTimeout(searchTimer);
+  showSuggestions();
   searchTimer = setTimeout(() => runSearch($("searchInput").value), 250);
 });
 $("searchForm").addEventListener("submit", (event) => {
   event.preventDefault();
   clearTimeout(searchTimer);
   $("searchInput").blur();   // hide the phone keyboard so the results show
+  $("searchSuggest").hidden = true;
   const ref = parseReference($("searchInput").value);
   if (ref?.typedChapter) { closeSearch(); return jumpTo(ref.book, ref.chapter, ref.verse, ref.verseEnd); }
+  saveRecent($("searchInput").value);
   if ($("searchInput").value.trim() !== search.query) runSearch($("searchInput").value);
 });
 $("searchBtn").addEventListener("click", openSearch);
 $("searchClose").addEventListener("click", closeSearch);
+$("searchStatus").addEventListener("click", (event) => {
+  if (!event.target.closest("[data-literal]")) return;
+  $("searchInput").value = search.fixed.from;
+  runSearch(search.fixed.from, { literal: true });
+});
 $("searchResults").addEventListener("click", (event) => {
-  if (event.target.closest("[data-more]")) {
-    if (search.shown < search.results.length) showMore();
+  const target = event.target.closest("button");
+  if (!target) return;
+  const d = target.dataset;
+  if (d.more !== undefined) {
+    if (search.shown < visibleResults().length) showMore();
     else if (isApiTranslation(state.translation)) runApiSearch(search.token, search.nivOffset);
     else runEsvSearch(search.token, search.esvPage + 1);
-    return;
+  } else if (d.filter) {
+    [search.filter, search.book] = [d.filter, null];
+    renderResults();
+  } else if (d.book) {
+    search.book = search.book === Number(d.book) ? null : Number(d.book);
+    renderResults();
+  } else if (d.detail) {
+    saveRecent(search.query);
+    const [kind, i] = d.detail.split(":");
+    openDetail(kind, Number(i));
+  } else if (d.back !== undefined) {
+    search.detail = null;
+    renderResults();
+  } else if (d.recent) {
+    $("searchInput").value = d.recent;
+    $("searchSuggest").hidden = true;
+    runSearch(d.recent);
+  } else if (d.clearRecent !== undefined) {
+    store.set("recentSearches", []);
+    showRecent();
+  } else if (d.at) {
+    openResult(search.detail ? search.detail.list : visibleResults(), Number(d.at));
+  } else if (d.go) {
+    const [book, chapter, verse, verseEnd] = d.go.split(",").map(Number);
+    saveRecent(search.query);
+    closeSearch();
+    jumpTo(book, chapter, verse, verseEnd || verse);
   }
-  const result = event.target.closest("[data-go]");
-  if (!result) return;
-  const [book, chapter, verse, verseEnd] = result.dataset.go.split(",").map(Number);
+});
+
+/* ---------- Going through search results ---------- */
+
+// After opening a result, a bar at the bottom steps to the next or previous one without going back to the
+// list, and the words searched for stay lit in the chapter.
+let searchNav = null;   // { list: [{ book, chapter, verse }], at, label, pattern }
+
+function openResult(list, at) {
+  saveRecent(search.query);
+  searchNav = { list: list.map(({ book, chapter, verse, verseEnd }) => ({ book, chapter, verse, verseEnd })), at,
+    label: search.detail?.title ?? search.query, pattern: search.detail ? null : search.words };
   closeSearch();
-  jumpTo(book, chapter, verse, verseEnd || verse);
+  stepResult(0);
+}
+function stepResult(step) {
+  searchNav.at = Math.min(searchNav.list.length - 1, Math.max(0, searchNav.at + step));
+  const r = searchNav.list[searchNav.at];
+  jumpTo(r.book, r.chapter, r.verse, r.verseEnd ?? r.verse);
+  showSearchNav();
+}
+function showSearchNav() {
+  $("searchNav").hidden = !searchNav;
+  document.body.classList.toggle("has-search-nav", !!searchNav);
+  if (!searchNav) return;
+  $("searchNavLabel").textContent = `${searchNav.at + 1} of ${searchNav.list.length} · ${searchNav.label}`;
+  $("searchPrev").disabled = searchNav.at === 0;
+  $("searchNext").disabled = searchNav.at === searchNav.list.length - 1;
+}
+$("searchPrev").addEventListener("click", () => stepResult(-1));
+$("searchNext").addEventListener("click", () => stepResult(1));
+$("searchNavLabel").addEventListener("click", openSearch);
+$("searchNavClose").addEventListener("click", () => {
+  searchNav = null;
+  showSearchNav();
+  els.chapter.querySelectorAll(".w.hit").forEach((w) => w.classList.remove("hit"));
+});
+
+// Light up the words searched for in the chapter on screen.
+window.addEventListener("bible:rendered", () => {
+  const pattern = searchNav?.pattern;
+  if (!pattern) return;
+  for (const verse of els.chapter.querySelectorAll(".verse")) {
+    const spans = wordsOf(Number(verse.dataset.verse));
+    let at = 0;
+    const starts = spans.map((w) => { const s = at; at += w.textContent.length + 1; return s; });
+    const text = spans.map((w) => w.textContent).join(" ");
+    for (const m of text.matchAll(pattern)) {
+      const end = m.index + m[0].length;
+      spans.forEach((w, i) => { if (starts[i] < end && starts[i] + w.textContent.length > m.index) w.classList.add("hit"); });
+    }
+  }
 });
 
 /* ---------- Going to a reference ---------- */
@@ -1875,7 +2405,7 @@ els.bookmarks.addEventListener("click", (event) => {
 function showTab(view) { document.querySelector(`.tab[data-view="${view}"]`).click(); }
 
 window.bible = {
-  state, store, goTo, jumpTo, reference, verseRef, changeVerses, escapeHTML, toast,
+  state, store, goTo, jumpTo, reference, verseRef, changeVerses, escapeHTML, toast, pickedWords,
   ready: false,
   showTab,
   noteCount: null,   // set by connect.js: how many notes are on the picked verses
