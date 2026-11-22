@@ -177,6 +177,10 @@ body.listening .toast { bottom: calc(var(--bottom) + 76px); }
 .book-strip .chip { height: 28px; font-size: 13px; }
 .smart-offer { display: block; width: 100%; max-width: 680px; margin: 10px auto 0; padding: 12px 14px; border-radius: 12px; background: var(--chip); color: var(--accent); text-align: left; font-size: 15px; }
 .smart-offer span { display: block; margin-top: 2px; color: var(--muted); font-size: 13px; }
+.smart-answer { max-width: 680px; margin: 0 auto; padding: 6px 8px 2px; }
+.smart-answer p { margin: 0 0 6px; font-size: 16px; line-height: 1.45; }
+.smart-note { max-width: 680px; margin: 0 auto 4px; padding: 0 8px; color: var(--muted); font-size: 13px; }
+.smart-answer .smart-note { padding: 0; }
 .smart-off { margin-left: 8px; font-size: 12px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); }
 .card-sub { color: var(--muted); font-size: 14px; }
 .snippet.plain { font-family: inherit; font-size: 15px; }

@@ -1501,7 +1501,7 @@ function distance(a, b, most) {
 // used most: "rightousness" -> "righteousness". Quoted words are left as typed.
 function fixSpelling(query, vocabs, known) {
   const fix = (typed) => {
-    const word = typed.toLowerCase().replace(/[’‘]/g, "'");
+    const word = typed.toLowerCase().replace(/[’‘]/g, "'").replace(/'s?$/, "");   // "Ruth's" is checked as "ruth"
     if (word.length < 3 || word.includes("*") || /^\d+$/.test(word)) return typed;
     if (vocabs.some((v) => wordForms(word, known).some((f) => hasPrefix(v, f)))) return typed;
     const most = word.length <= 4 ? 1 : 2;
@@ -1996,6 +1996,7 @@ $("searchForm").addEventListener("submit", (event) => {
   if (ref?.typedChapter) { closeSearch(); return jumpTo(ref.book, ref.chapter, ref.verse, ref.verseEnd); }
   saveRecent($("searchInput").value);
   if ($("searchInput").value.trim() !== search.query) runSearch($("searchInput").value);
+  else if (!search.smart) runSmart(search.token, { now: true });   // asks the server now rather than after the pause
 });
 $("searchBtn").addEventListener("click", openSearch);
 $("searchClose").addEventListener("click", closeSearch);
@@ -2039,7 +2040,9 @@ $("searchResults").addEventListener("click", (event) => {
     store.set("smartSearch", false);
     renderResults();
   } else if (d.meaning) {
-    openResult(search.smart, Number(d.meaning), { pattern: null });
+    openResult(search.smart.found, Number(d.meaning), { pattern: null });
+  } else if (d.answer) {
+    openResult(search.smart.refs, Number(d.answer), { pattern: null });
   } else if (d.at) {
     openResult(search.detail ? search.detail.list : visibleResults(), Number(d.at));
   } else if (d.go) {
@@ -2104,29 +2107,54 @@ window.addEventListener("bible:rendered", () => {
 
 /* ---------- Smart search (by meaning) ---------- */
 
-// A small language model (BAAI's bge-small-en-v1.5, run on the phone by Hugging Face's transformers.js) turns
-// what was typed into numbers for its meaning. Every verse, and every section of the Bible under its heading
-// (the Berean Standard Bible's headings, public domain), was turned into the same kind of numbers ahead of time
-// (tools/meaning_vectors.mjs, from the WEB's wording), so the closest ones are about what was asked even
-// without its words: "where does Jesus talk about worry", "the prodigal son". It's downloaded the first time
-// someone turns it on (about 50 MB: the model from Hugging Face, the numbers from this site), then kept on the
-// device; until then it needs a connection. English only.
+// Every verse, and every section of the Bible under its heading (the Berean Standard Bible's headings, public
+// domain), was turned ahead of time into numbers for what it means (tools/meaning_vectors.mjs, from the WEB's
+// wording, with BAAI's small bge model): meaning/vectors.bin, downloaded the first time someone turns smart
+// search on (about 13 MB) and kept on the device. A question is turned into the same kind of numbers, and the
+// closest verses and sections are about what was asked, even without its words.
+// With a connection the family's server does that (worker/src/index.js, Cloudflare's free plan): an AI model
+// also answers the question in a sentence, suggests verses and writes a few searches, so "who was Ruth's
+// great-grandson?" finds Ruth 4:17. Suggested verses are shown only when the meaning numbers agree they're
+// close to the question, so every verse shown is the Bible's, not the AI's. Without a connection the phone
+// can do the meaning part itself with the same model run by transformers.js, if that was downloaded before
+// (about 35 MB more, fetched the first time the server can't be reached). English only.
+const SMART_SERVER = "https://bible-smart.yszcb4vfmh.workers.dev";
 const SMART_LIBRARY = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2";
 const SMART_MODEL = "Xenova/bge-small-en-v1.5";
-const smart = { on: store.get("smartSearch", false), ready: null };
+const SMART_PREFIX = "Represent this sentence for searching relevant passages: ";
+const smart = { on: store.get("smartSearch", false), vectors: null, model: null, asked: new Map(), timer: null };
 
-function loadSmart(onProgress = () => {}) {
-  smart.ready ??= (async () => {
-    const [{ pipeline }, vectors, sections] = await Promise.all([
-      import(SMART_LIBRARY),
-      fetch("meaning/vectors.bin").then((r) => { if (!r.ok) throw new Error(r.statusText); return r.arrayBuffer(); }),
-      fetch("meaning/sections.json").then((r) => r.json()),
-    ]);
-    const embed = await pipeline("feature-extraction", SMART_MODEL, { dtype: "q8", progress_callback: onProgress });
+function loadVectors() {
+  smart.vectors ??= Promise.all([
+    fetch("meaning/vectors.bin").then((r) => { if (!r.ok) throw new Error(r.statusText); return r.arrayBuffer(); }),
+    fetch("meaning/sections.json").then((r) => r.json()),
+  ]).then(([vectors, sections]) => {
     const count = new Uint32Array(vectors, 0, 1)[0];
-    return { embed, sections, scales: new Float32Array(vectors, 4, count), values: new Int8Array(vectors, 4 + count * 4, count * 384) };
-  })().catch((error) => { smart.ready = null; throw error; });
-  return smart.ready;
+    return { sections, scales: new Float32Array(vectors, 4, count), values: new Int8Array(vectors, 4 + count * 4, count * 384) };
+  }).catch((error) => { smart.vectors = null; throw error; });
+  return smart.vectors;
+}
+function loadModel() {
+  smart.model ??= import(SMART_LIBRARY)
+    .then(({ pipeline }) => pipeline("feature-extraction", SMART_MODEL, { dtype: "q8" }))
+    .then((embed) => { store.set("smartModel", true); return embed; })
+    .catch((error) => { smart.model = null; throw error; });
+  return smart.model;
+}
+
+// The server's answer, once per question: { answer, refs, searches, vectors }.
+function askServer(query) {
+  if (!smart.asked.has(query)) {
+    smart.asked.set(query, fetch(SMART_SERVER, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q: query }) }).then((r) => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+      .catch((error) => { smart.asked.delete(query); throw error; }));
+  }
+  return smart.asked.get(query);
+}
+// The same, worked out on the phone: just the meaning of the query itself.
+async function askPhone(query) {
+  const embed = await loadModel();
+  return { vectors: [[...(await embed(SMART_PREFIX + query, { pooling: "cls", normalize: true })).data]], searches: [], refs: [], answer: "" };
 }
 
 // Words that ask rather than say what about.
@@ -2142,30 +2170,37 @@ function headingShare(sections, word) {
   return headingShares.get(word);
 }
 
-// The verses and sections closest in meaning to the query, best first; a verse inside a section already
-// listed is left out.
-async function searchByMeaning(query, most = 25) {
-  const { embed, sections, scales, values } = await loadSmart();
-  const q = (await embed(`Represent this sentence for searching relevant passages: ${query}`, { pooling: "cls", normalize: true })).data;
+// How close every verse and section is to the question or any of the searches (the best of them), plus a
+// little for a heading with one of their less common words ("worry", not "Jesus"): "where does Jesus talk
+// about worry" -> "Do Not Worry".
+function closeness({ sections, scales, values }, vectors, texts) {
   verseAt(0);
   const verses = chapterStarts.at(-1)[0] + state.books.at(-1).chapters.at(-1).length;
-  // A heading with one of the query's less common words ("worry", not "Jesus") is very likely the passage:
-  // "where does Jesus talk about worry" -> "Do Not Worry".
-  const rare = queryWords(query).filter((w) => w.length >= 4 && !STOP_WORDS.has(w) && !QUESTION_WORDS.has(w) && headingShare(sections, w) < 0.02)
-    .map((w) => new RegExp(WORD_START + wordForms(w).map(wordPattern).join("|"), "iu"));
-  const best = [];   // [score, index], kept to the best 60
-  for (let i = 0; i < scales.length; i++) {
-    let dot = 0;
-    for (let d = 0, at = i * 384; d < 384; d++) dot += q[d] * values[at + d];
-    const score = dot * scales[i] + (i >= verses && rare.some((p) => p.test(sections[i - verses][0])) ? 0.06 : 0);
-    if (best.length < 60 || score > best[best.length - 1][0]) {
-      best.push([score, i]);
-      best.sort((a, b) => b[0] - a[0]);
-      if (best.length > 60) best.pop();
+  const words = [...new Set(texts.flatMap(queryWords))]
+    .filter((w) => w.length >= 4 && !STOP_WORDS.has(w) && !QUESTION_WORDS.has(w) && headingShare(sections, w) < 0.02);
+  const rare = words.map((w) => new RegExp(WORD_START + wordForms(w).map(wordPattern).join("|"), "iu"));
+  // Each search counts only half, with the question the other half: a loosely worded search can't
+  // bring in verses far from what was asked.
+  const scores = new Float32Array(scales.length);
+  const question = new Float32Array(scales.length);
+  vectors.forEach((q, n) => {
+    for (let i = 0; i < scales.length; i++) {
+      let dot = 0;
+      for (let d = 0, at = i * 384; d < 384; d++) dot += q[d] * values[at + d];
+      dot *= scales[i];
+      if (n === 0) scores[i] = question[i] = dot;
+      else if ((question[i] + dot) / 2 > scores[i]) scores[i] = (question[i] + dot) / 2;
     }
-  }
+  });
+  sections.forEach(([heading], i) => { if (rare.some((p) => p.test(heading))) scores[verses + i] += 0.06; });
+  return { scores, verses };
+}
+
+// The verses and sections closest in meaning, best first; verses inside a section listed fold into it.
+function closest({ sections }, { scores, verses }, most = 25) {
+  const order = [...scores.keys()].sort((a, b) => scores[b] - scores[a]).slice(0, 80);
   const found = [], covered = [];
-  for (const [, i] of best) {
+  for (const i of order) {
     if (i >= verses) {
       const [heading, from] = sections[i - verses];
       const to = (sections[i - verses + 1]?.[1] ?? verses) - 1;
@@ -2173,7 +2208,6 @@ async function searchByMeaning(query, most = 25) {
       covered.push([from, to]);
       const start = verseAt(from), end = verseAt(to);
       const section = { ...start, verseEnd: end.chapter === start.chapter ? end.verse : chapterEnd(start.book, start.chapter), heading, end };
-      // Verses already listed from this section fold into it, where the first of them was.
       const inside = found.map((r, at) => !r.heading && r.id >= from && r.id <= to ? at : -1).filter((at) => at >= 0);
       if (inside.length) {
         found.splice(inside[0], 1, section);
@@ -2185,46 +2219,86 @@ async function searchByMeaning(query, most = 25) {
   return found;
 }
 
+// The AI's suggested verses that are really there and close in meaning to the question (among the best
+// 500 of all verses), as { book, chapter, verse, verseEnd }.
+function checkedRefs(refs, { scores, verses }) {
+  const bar = [...scores.subarray(0, verses)].sort((a, b) => b - a)[500];
+  return refs.flatMap((text) => {
+    const ref = parseReference(text);
+    if (!ref || ref.verse === undefined || !state.books[ref.book]?.chapters[ref.chapter]?.[ref.verse - 1]) return [];
+    const end = Math.min(ref.verseEnd ?? ref.verse, chapterEnd(ref.book, ref.chapter));
+    const first = chapterStarts.find(([, b, c]) => b === ref.book && c === ref.chapter)[0];
+    let best = -1;
+    for (let v = ref.verse; v <= end; v++) best = Math.max(best, scores[first + v - 1]);
+    return best >= bar ? [{ book: ref.book, chapter: ref.chapter, verse: ref.verse, verseEnd: end }] : [];
+  });
+}
+
 function smartBox() {
   const box = $("smartResults");
   const q = search.query;
   const usable = box && !(state.translation in BOOK_NAMES) && q.length >= 3 && !/["*]|(^|\s)-/.test(q) && !search.top;
   return usable ? box : null;
 }
-async function runSmart(token) {
+const meaningLabel = `<div class="results-label">By meaning <button class="link-btn inline smart-off" data-smart-off>Turn off</button></div>`;
+
+// Runs after the word search. The server is asked once typing stops for a moment (or on Search), so a
+// question costs one of the day's free answers, not one per letter.
+async function runSmart(token, { now = false } = {}) {
+  clearTimeout(smart.timer);
   const box = smartBox();
   if (!box) return;
+  const query = search.query;   // as typed: the AI reads past misspellings, and meaning hardly changes with them
   if (!smart.on) {
     // Offered for questions and phrases; a single word is well served by the word search.
-    if (queryWords(search.query).length > 1) {
-      box.innerHTML = `<button class="smart-offer" data-smart-on><b>Smart search</b> · find verses by meaning, even without these words` +
-        `<span>Downloads about 50 MB once, then works on this device</span></button>`;
+    if (queryWords(query).length > 1) {
+      box.innerHTML = `<button class="smart-offer" data-smart-on><b>Smart search</b> · ask a question, or find verses by meaning even without these words` +
+        `<span>Downloads about 13 MB once</span></button>`;
     }
     return;
   }
-  box.innerHTML = `<div class="results-label">By meaning</div><p class="list-empty">Searching by meaning…</p>`;
+  box.innerHTML = meaningLabel + `<p class="list-empty">Searching by meaning…</p>`;
+  if (!now && !smart.asked.has(query)) {
+    smart.timer = setTimeout(() => runSmart(token, { now: true }), 1200);
+    return;
+  }
   try {
-    const found = await searchByMeaning(search.fixed?.to ?? search.query);
+    const data = await loadVectors();
+    let reply, fromServer = true;
+    try { reply = await askServer(query); }
+    catch {
+      if (!store.get("smartModel", false) && !navigator.onLine) throw new Error("offline");
+      fromServer = false;
+      reply = await askPhone(query);
+    }
     if (token !== search.token) return;
-    search.smart = found;
-    showSmart(found);
+    const scored = closeness(data, reply.vectors, [query, ...(reply.searches ?? [])]);
+    search.smart = { found: closest(data, scored), answer: reply.answer ?? "",
+      refs: checkedRefs(reply.refs ?? [], scored), searches: reply.searches ?? [], fromServer };
+    showSmart(search.smart);
   } catch {
-    if (token === search.token) box.innerHTML = `<div class="results-label">By meaning</div>` +
-      `<p class="list-empty">Smart search needs an internet connection the first time, to download.</p>`;
+    if (token === search.token) box.innerHTML = meaningLabel +
+      `<p class="list-empty">Smart search needs an internet connection${smart.vectors ? "" : " the first time, to download"}.</p>`;
   }
 }
-function showSmart(found) {
+
+function showSmart({ found, answer, refs, searches }) {
   const box = smartBox();
   if (!box) return;
   const text = (b, c, v) => search.books[b]?.chapters[c]?.[v - 1] ?? "";
-  box.innerHTML = `<div class="results-label">By meaning <button class="link-btn inline smart-off" data-smart-off>Turn off</button></div>` +
-    found.slice(0, search.smartAll ? found.length : 8).map((r, i) => {
-      const range = !r.heading ? `${bookName(r.book)} ${r.chapter + 1}:${r.verse}`
-        : r.end.chapter === r.chapter ? `${bookName(r.book)} ${r.chapter + 1}:${r.verse}–${r.end.verse}`
-        : `${bookName(r.book)} ${r.chapter + 1}:${r.verse}–${r.end.book === r.book ? "" : `${bookName(r.end.book)} `}${r.end.chapter + 1}:${r.end.verse}`;
-      return `<button class="result" data-meaning="${i}"><div class="ref">${escapeHTML(range)}${r.heading ? ` · ${escapeHTML(r.heading)}` : ""}</div>` +
-        `<div class="snippet">${escapeHTML(text(r.book, r.chapter, r.verse))}${r.heading ? " …" : ""}</div></button>`;
-    }).join("") +
+  const place = (r) => !r.heading
+    ? `${bookName(r.book)} ${r.chapter + 1}:${r.verse}` + (r.verseEnd > r.verse ? `–${r.verseEnd}` : "")
+    : r.end.chapter === r.chapter ? `${bookName(r.book)} ${r.chapter + 1}:${r.verse}–${r.end.verse}`
+    : `${bookName(r.book)} ${r.chapter + 1}:${r.verse}–${r.end.book === r.book ? "" : `${bookName(r.end.book)} `}${r.end.chapter + 1}:${r.end.verse}`;
+  const row = (r, attr) => `<button class="result" ${attr}><div class="ref">${escapeHTML(place(r))}${r.heading ? ` · ${escapeHTML(r.heading)}` : ""}</div>` +
+    `<div class="snippet">${escapeHTML(text(r.book, r.chapter, r.verse))}${r.heading || r.verseEnd > r.verse ? " …" : ""}</div></button>`;
+  box.innerHTML =
+    (answer || refs.length ? `<div class="results-label">Answer</div><div class="smart-answer">` +
+      (answer ? `<p>${escapeHTML(answer)}</p><p class="smart-note">Suggested by AI. Read the verses to be sure.</p>` : "") + `</div>` +
+      refs.map((r, i) => row(r, `data-answer="${i}"`)).join("") : "") +
+    meaningLabel +
+    (searches.length ? `<p class="smart-note looked">Looked for: ${searches.map(escapeHTML).join(" · ")}</p>` : "") +
+    found.slice(0, search.smartAll ? found.length : 8).map((r, i) => row(r, `data-meaning="${i}"`)).join("") +
     (found.length > 8 && !search.smartAll ? `<button class="more-btn" data-smart-more>More by meaning</button>` : "");
 }
 $("searchResults").addEventListener("click", (event) => {
@@ -2236,22 +2310,16 @@ async function turnOnSmart() {
   smart.on = true;
   store.set("smartSearch", true);
   const box = $("smartResults");
-  const loaded = new Map();   // file -> [loaded, total]
-  const show = () => {
-    const [got, all] = [...loaded.values()].reduce(([a, b], [x, y]) => [a + x, b + y], [0, 0]);
-    if (box?.isConnected) box.innerHTML = `<div class="results-label">By meaning</div>` +
-      `<p class="list-empty">Downloading smart search… ${all ? Math.round(got / all * 100) : 0}%</p>`;
-  };
-  show();
+  if (box) box.innerHTML = meaningLabel + `<p class="list-empty">Downloading smart search…</p>`;
   try {
-    await loadSmart((p) => { if (p.status === "progress" && p.total) { loaded.set(p.file, [p.loaded, p.total]); show(); } });
+    await loadVectors();
   } catch {
     smart.on = false;
     store.set("smartSearch", false);
     if (box?.isConnected) box.innerHTML = `<p class="list-empty">Couldn't download smart search. It needs an internet connection; try again later.</p>`;
     return;
   }
-  runSmart(search.token);
+  runSmart(search.token, { now: true });
 }
 
 /* ---------- Going to a reference ---------- */
