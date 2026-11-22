@@ -1685,6 +1685,18 @@ function showRecent() {
 async function showSuggestions() {
   const box = $("searchSuggest");
   const value = $("searchInput").value;
+  // After "go to:", book names that start that way (or nearly), until a chapter is typed.
+  const going = goingTo(value);
+  if (going !== null) {
+    const typed = going.toLowerCase().replace(/\s+/g, "");
+    const names = /\d$|\d\s*\p{L}*\s*\d/u.test(going) || !typed ? [] : state.books.map((b, i) => bookName(i)).filter((name) => {
+      const n = name.toLowerCase().replace(/\s+/g, "");
+      return n.startsWith(typed) || typed.length >= 3 && distance(typed, n.slice(0, typed.length), 1) <= 1;
+    }).slice(0, 6);
+    box.innerHTML = names.map((n) => `<button type="button" data-book-name="${escapeHTML(n)}">${escapeHTML(n)}</button>`).join("");
+    box.hidden = !names.length;
+    return;
+  }
   const m = value.match(/(?:^|\s)([\p{L}']{2,})$/u);
   if (!m) return void (box.hidden = true);
   const books = await bibleForSearch().catch(() => null) ?? state.books;
@@ -1698,6 +1710,13 @@ async function showSuggestions() {
   box.hidden = !words.length;
 }
 $("searchSuggest").addEventListener("click", (event) => {
+  const book = event.target.closest("[data-book-name]")?.dataset.bookName;
+  if (book) {
+    $("searchInput").value = `go to: ${book} `;
+    $("searchSuggest").hidden = true;
+    $("searchInput").focus();
+    return runSearch($("searchInput").value);
+  }
   const word = event.target.closest("[data-word]")?.dataset.word;
   if (!word) return;
   const input = $("searchInput");
@@ -1721,6 +1740,15 @@ async function runSearch(query, { literal = false } = {}) {
   $("searchResults").innerHTML = "";
   $("searchStatus").textContent = "";
   if (search.query.length < 2) return showRecent();
+  // "go to: jhon 3:16" (or "goto:") only goes somewhere, with the book's name corrected; no word search.
+  const going = goingTo(search.query);
+  if (going !== null) {
+    const ref = parseReference(going, { nearby: true });
+    $("searchResults").innerHTML = ref ? `<button class="result go-ref" data-go="${ref.book},${ref.chapter},${ref.verse},${ref.verseEnd}">` +
+      `<div class="ref">Go to ${escapeHTML(refLabel(ref))}</div></button>`
+      : going ? `<p class="list-empty">No passage found for “${escapeHTML(going)}”. Try a book and chapter, like John 3:16 or 1 Cor 13.</p>` : "";
+    return;
+  }
   // "jn 3:16" or "1 cor 13" goes there; a book's name alone ("Job") offers it above the word matches.
   const ref = parseReference(search.query);
   if (ref) {
@@ -1981,6 +2009,9 @@ function openSearch() {
 }
 const closeSearch = () => { $("search").hidden = true; };
 
+// What follows "go to:" or "goto:", or null when the search doesn't start that way.
+const goingTo = (text) => text.match(/^\s*go\s*to\s*:\s*(.*)$/i)?.[1].trim() ?? null;
+
 let searchTimer;
 $("searchInput").addEventListener("input", () => {
   clearTimeout(searchTimer);
@@ -1992,8 +2023,10 @@ $("searchForm").addEventListener("submit", (event) => {
   clearTimeout(searchTimer);
   $("searchInput").blur();   // hide the phone keyboard so the results show
   $("searchSuggest").hidden = true;
-  const ref = parseReference($("searchInput").value);
-  if (ref?.typedChapter) { closeSearch(); return jumpTo(ref.book, ref.chapter, ref.verse, ref.verseEnd); }
+  const going = goingTo($("searchInput").value);
+  const ref = going !== null ? parseReference(going, { nearby: true }) : parseReference($("searchInput").value);
+  if (ref && (ref.typedChapter || going !== null)) { closeSearch(); return jumpTo(ref.book, ref.chapter, ref.verse, ref.verseEnd); }
+  if (going !== null) return;
   saveRecent($("searchInput").value);
   if ($("searchInput").value.trim() !== search.query) runSearch($("searchInput").value);
   else if (!search.smart) runSmart(search.token, { now: true });   // asks the server now rather than after the pause
@@ -2358,8 +2391,9 @@ function splitName(name) {
   return { num: Number(m[1] ?? 0), base: m[2].replace(/\s+/g, "") };
 }
 
-// -> { book, chapter, verse, verseEnd, typedChapter } or null
-function parseReference(text) {
+// -> { book, chapter, verse, verseEnd, typedChapter } or null. A book name a letter or two off ("Jhon 3:16",
+// "phillipians 4") is taken for the nearest one when a chapter follows it, or always when `nearby` (after "go to:").
+function parseReference(text, { nearby = false } = {}) {
   const m = text.trim().toLowerCase().replace(/ё/g, "е").replace(/\./g, " ")
     .match(/^(?:([123])\s*|(i{1,3}|first|second|third)\s+)?(\p{L}[\p{L}\s]*?)\s*(?:(\d+)(?:\s*[:,]\s*(\d+)(?:\s*[-–—]\s*(\d+))?)?)?$/u);
   if (!m || !state.books.length) return null;
@@ -2369,8 +2403,14 @@ function parseReference(text) {
   const letters = m[3].replace(/\s+/g, "");
   const base = ALIAS.get(letters);
   // A short form or full name; otherwise the first book whose name starts that way (3 letters at least).
-  const matches = base ? bookKeys.filter((k) => k.base === base)
+  let matches = base ? bookKeys.filter((k) => k.base === base)
     : letters.length >= 3 ? bookKeys.filter((k) => k.base.startsWith(letters)) : [];
+  if (!matches.length && letters.length >= 3 && (nearby || m[4] !== undefined)) {
+    const most = letters.length <= 5 ? 1 : 2;
+    const near = bookKeys.map((k) => ({ k, d: distance(letters, k.base, most) })).filter(({ d }) => d <= most);
+    const best = Math.min(...near.map(({ d }) => d));
+    matches = near.filter(({ d }) => d === best).map(({ k }) => k);
+  }
   const match = matches.find((k) => k.num === num) ?? (num === 0 ? matches.find((k) => k.num === 1) : undefined);
   if (!match) return null;
   const { book } = match;
